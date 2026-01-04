@@ -3,6 +3,7 @@ package moonlight
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -264,15 +265,12 @@ func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
 	return certBytes, nil
 }
 
-// pairChallenge sends the client challenge
-func (c *Client) pairChallenge(ctx context.Context, serverCert []byte) error {
-	// Generate salt and derive AES key from PIN
-	salt := make([]byte, 16)
-	rand.Read(salt)
+// pairChallenge sends the client challenge (Phase 2)
+func (c *Client) pairChallenge(ctx context.Context, serverCertPEM []byte) error {
+	// Use the salt from Phase 1 to derive AES key
+	aesKey := c.generateAESKey(c.pairingSalt)
 
-	aesKey := c.generateAESKey(salt)
-
-	// Generate client challenge (random bytes)
+	// Generate client challenge (16 random bytes)
 	clientChallenge := make([]byte, 16)
 	rand.Read(clientChallenge)
 
@@ -282,11 +280,14 @@ func (c *Client) pairChallenge(ctx context.Context, serverCert []byte) error {
 		return err
 	}
 
-	// Send challenge
-	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientchallenge=%s",
-		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(append(salt, encryptedChallenge...)))
+	// Send challenge (Phase 2)
+	challengeHex := strings.ToUpper(hex.EncodeToString(encryptedChallenge))
+	pairURL := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&clientchallenge=%s",
+		c.host, c.port, c.uniqueID, c.pairingUUID, c.deviceName, challengeHex)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	log.Printf("Sending clientchallenge (Phase 2)...")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", pairURL, nil)
 	if err != nil {
 		return err
 	}
@@ -300,45 +301,78 @@ func (c *Client) pairChallenge(ctx context.Context, serverCert []byte) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	var challengeResp struct {
-		Paired          string `xml:"paired"`
-		ChallengeResp   string `xml:"challengeresponse"`
+		Paired        string `xml:"paired"`
+		ChallengeResp string `xml:"challengeresponse"`
 	}
 	if err := xml.Unmarshal(body, &challengeResp); err != nil {
-		return fmt.Errorf("parse challenge response: %w", err)
+		return fmt.Errorf("parse challenge response: %w (body: %s)", err, string(body))
 	}
+
+	log.Printf("Phase 2 response: paired=%s, challengeresponse_len=%d", challengeResp.Paired, len(challengeResp.ChallengeResp))
 
 	if challengeResp.Paired != "1" {
 		return fmt.Errorf("challenge rejected")
 	}
 
-	// Verify server challenge response and continue pairing
-	return c.pairServerChallengeResponse(ctx, aesKey, serverCert, clientChallenge)
+	// Decrypt server's response to get: hash (32 bytes) + server_challenge (16 bytes)
+	encryptedResponse, err := hex.DecodeString(challengeResp.ChallengeResp)
+	if err != nil {
+		return fmt.Errorf("decode challenge response: %w", err)
+	}
+
+	decryptedResponse, err := c.aesDecrypt(aesKey, encryptedResponse)
+	if err != nil {
+		return fmt.Errorf("decrypt challenge response: %w", err)
+	}
+
+	// Response format: hash (SHA256 = 32 bytes) + server_challenge (16 bytes)
+	if len(decryptedResponse) < 48 {
+		return fmt.Errorf("challenge response too short: %d", len(decryptedResponse))
+	}
+
+	serverResponseHash := decryptedResponse[:32]
+	serverChallenge := decryptedResponse[32:48]
+
+	log.Printf("Decrypted Phase 2: hash_len=%d, server_challenge_len=%d", len(serverResponseHash), len(serverChallenge))
+
+	// Continue to Phase 3
+	return c.pairServerChallengeResponse(ctx, aesKey, serverCertPEM, clientChallenge, serverChallenge, serverResponseHash)
 }
 
-// pairServerChallengeResponse handles the server's challenge response
-func (c *Client) pairServerChallengeResponse(ctx context.Context, aesKey, serverCert, clientChallenge []byte) error {
-	// Generate server challenge response
-	serverChallengeResp := make([]byte, 16)
-	rand.Read(serverChallengeResp)
+// pairServerChallengeResponse sends our response to server's challenge (Phase 3)
+func (c *Client) pairServerChallengeResponse(ctx context.Context, aesKey, serverCertPEM, clientChallenge, serverChallenge, serverResponseHash []byte) error {
+	// Generate client secret (16 random bytes) - we'll need this for Phase 4
+	clientSecret := make([]byte, 16)
+	rand.Read(clientSecret)
 
-	// Hash: SHA1(server_challenge + server_cert + secret)
-	h := sha1.New()
-	h.Write(serverChallengeResp)
-	h.Write(serverCert)
-	secret := make([]byte, 16)
-	rand.Read(secret)
-	h.Write(secret)
-	challengeRespHash := h.Sum(nil)
+	// Get client certificate signature (from the cert itself)
+	cert, err := x509.ParseCertificate(c.certDER)
+	if err != nil {
+		return fmt.Errorf("parse client cert: %w", err)
+	}
+	clientCertSignature := cert.Signature
 
-	encryptedResp, err := c.aesEncrypt(aesKey, challengeRespHash)
+	// Compute challenge response hash: SHA256(server_challenge + client_cert_signature + client_secret)
+	h := sha256.New()
+	h.Write(serverChallenge)
+	h.Write(clientCertSignature)
+	h.Write(clientSecret)
+	challengeResponseHash := h.Sum(nil)
+
+	// Encrypt the hash
+	encryptedHash, err := c.aesEncrypt(aesKey, challengeResponseHash)
 	if err != nil {
 		return err
 	}
 
-	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&serverchallengeresp=%s",
-		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(encryptedResp))
+	// Send Phase 3 request
+	hashHex := strings.ToUpper(hex.EncodeToString(encryptedHash))
+	pairURL := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&serverchallengeresp=%s",
+		c.host, c.port, c.uniqueID, c.pairingUUID, c.deviceName, hashHex)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	log.Printf("Sending serverchallengeresp (Phase 3)...")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", pairURL, nil)
 	if err != nil {
 		return err
 	}
@@ -356,41 +390,55 @@ func (c *Client) pairServerChallengeResponse(ctx context.Context, aesKey, server
 		PairingSecret string `xml:"pairingsecret"`
 	}
 	if err := xml.Unmarshal(body, &scResp); err != nil {
-		return fmt.Errorf("parse server challenge: %w", err)
+		return fmt.Errorf("parse server challenge response: %w (body: %s)", err, string(body))
 	}
+
+	log.Printf("Phase 3 response: paired=%s, pairingsecret_len=%d", scResp.Paired, len(scResp.PairingSecret))
 
 	if scResp.Paired != "1" {
-		return fmt.Errorf("server challenge failed")
+		return fmt.Errorf("server challenge response failed")
 	}
 
-	// Send client pairing secret (our certificate signature)
-	return c.pairClientSecret(ctx, aesKey)
+	// Decode server pairing secret: server_secret (16 bytes) + signature
+	serverPairingSecret, err := hex.DecodeString(scResp.PairingSecret)
+	if err != nil {
+		return fmt.Errorf("decode server pairing secret: %w", err)
+	}
+
+	if len(serverPairingSecret) < 16 {
+		return fmt.Errorf("server pairing secret too short")
+	}
+
+	// Verify server signature (optional but recommended)
+	// For now, continue to Phase 4
+
+	// Send client pairing secret (Phase 4)
+	return c.pairClientSecret(ctx, aesKey, clientSecret)
 }
 
-// pairClientSecret sends the client's pairing secret
-func (c *Client) pairClientSecret(ctx context.Context, aesKey []byte) error {
-	// Create pairing secret: client cert + signature
+// pairClientSecret sends the client's pairing secret (Phase 4)
+func (c *Client) pairClientSecret(ctx context.Context, aesKey, clientSecret []byte) error {
+	// Sign the client secret with our private key using SHA256
 	h := sha256.New()
-	h.Write(c.certDER)
-	certHash := h.Sum(nil)
+	h.Write(clientSecret)
+	secretHash := h.Sum(nil)
 
-	// Sign with private key
-	signature, err := rsa.SignPKCS1v15(rand.Reader, c.privateKey, 0, certHash)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, c.privateKey, crypto.SHA256, secretHash)
 	if err != nil {
-		// If signing fails, just send the cert hash
-		signature = certHash
+		return fmt.Errorf("sign client secret: %w", err)
 	}
 
-	pairingSecret := append(c.certDER, signature...)
-	encryptedSecret, err := c.aesEncrypt(aesKey, pairingSecret)
-	if err != nil {
-		return err
-	}
+	// Client pairing secret = client_secret (16 bytes) + signature
+	pairingSecret := append(clientSecret, signature...)
 
-	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientpairingsecret=%s",
-		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(encryptedSecret))
+	// Send unencrypted (Sunshine expects raw hex, not AES encrypted)
+	secretHex := strings.ToUpper(hex.EncodeToString(pairingSecret))
+	pairURL := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&clientpairingsecret=%s",
+		c.host, c.port, c.uniqueID, c.pairingUUID, c.deviceName, secretHex)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	log.Printf("Sending clientpairingsecret (Phase 4), secret_len=%d, sig_len=%d...", len(clientSecret), len(signature))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", pairURL, nil)
 	if err != nil {
 		return err
 	}
@@ -407,8 +455,10 @@ func (c *Client) pairClientSecret(ctx context.Context, aesKey []byte) error {
 		Paired string `xml:"paired"`
 	}
 	if err := xml.Unmarshal(body, &secretResp); err != nil {
-		return fmt.Errorf("parse secret response: %w", err)
+		return fmt.Errorf("parse secret response: %w (body: %s)", err, string(body))
 	}
+
+	log.Printf("Phase 4 response: paired=%s", secretResp.Paired)
 
 	if secretResp.Paired != "1" {
 		return fmt.Errorf("client secret rejected")
