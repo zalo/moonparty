@@ -18,8 +18,8 @@ type Config struct {
 	// ForceNewIdentity forces regeneration of the client identity
 	ForceNewIdentity bool `json:"-"`
 
-	// UseLimelight enables the moonlight-common-c backend for streaming
-	// This provides better compatibility with FEC, depacketization, and input handling
+	// UseLimelight enables the moonlight-common-go backend for streaming
+	// This provides proper Moonlight protocol support with FEC, depacketization, and input handling
 	UseLimelight bool `json:"use_limelight"`
 
 	// ICEServers is a list of STUN/TURN server URLs

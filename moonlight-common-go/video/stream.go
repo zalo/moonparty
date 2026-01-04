@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moonparty/moonlight-common-go/crypto"
 	"github.com/moonparty/moonlight-common-go/fec"
 	"github.com/moonparty/moonlight-common-go/limelight"
 	"github.com/moonparty/moonlight-common-go/protocol"
@@ -499,8 +500,9 @@ func (e *videoError) Error() string {
 
 // decryptAESGCM decrypts data using AES-GCM
 func decryptAESGCM(key, iv, tag, ciphertext []byte) ([]byte, error) {
-	// This would use crypto/aes and crypto/cipher in a real implementation
-	// For now, return the ciphertext as a placeholder
-	// Real implementation needed for encrypted streams
-	return ciphertext, nil
+	ctx, err := crypto.NewContext(key)
+	if err != nil {
+		return nil, err
+	}
+	return ctx.DecryptGCM(ciphertext, iv, tag, nil)
 }

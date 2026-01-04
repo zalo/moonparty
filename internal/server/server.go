@@ -398,7 +398,7 @@ func (s *Server) startStreaming(ctx context.Context, sess *session.Session) erro
 
 	// Choose streaming backend
 	if s.config.UseLimelight {
-		log.Println("Using moonlight-common-c (limelight) backend for streaming")
+		log.Println("Using moonlight-common-go backend for streaming")
 		stream, err = s.moonlight.StartStreamWithLimelight(ctx,
 			s.config.StreamSettings.Width,
 			s.config.StreamSettings.Height,

@@ -1169,6 +1169,14 @@ func (s *Stream) rtspAnnounce() error {
 	sdp.WriteString("a=x-nv-general.useReliableUdp:1\r\n")
 	sdp.WriteString("a=x-nv-vqos[0].fec.minRequiredFecPackets:0\r\n")
 	sdp.WriteString("a=x-nv-general.featureFlags:135\r\n")
+	// ML_FF_FEC_STATUS (0x01) | ML_FF_SESSION_ID_V1 (0x02) = 3
+	// ML_FF_SESSION_ID_V1 tells Sunshine we support X-SS-Ping-Payload for session identification
+	sdp.WriteString("a=x-ml-general.featureFlags:3\r\n")
+	// QOS traffic types for video and audio
+	sdp.WriteString("a=x-nv-vqos[0].qosTrafficType:5\r\n")
+	sdp.WriteString("a=x-nv-aqos.qosTrafficType:4\r\n")
+	// Configured bitrate (0 means use the value from x-nv-vqos[0].bw.maximumBitrateKbps)
+	sdp.WriteString("a=x-ml-video.configuredBitrateKbps:0\r\n")
 
 	_, _, err := s.rtspSendRequest("ANNOUNCE", target, sdp.String())
 	return err
@@ -1257,7 +1265,10 @@ func (s *Stream) startPingThreads() {
 		}
 	}
 
-	log.Printf("Starting ping threads for video %s and audio %s", serverVideoAddr, serverAudioAddr)
+	log.Printf("Starting ping threads:")
+	log.Printf("  Video: local %s -> server %s", s.videoConn.LocalAddr(), serverVideoAddr)
+	log.Printf("  Audio: local %s -> server %s", s.audioConn.LocalAddr(), serverAudioAddr)
+	log.Printf("  Ping payload: %s", s.pingPayload)
 
 	// Start video ping goroutine (runs until stream closes)
 	go func() {
@@ -1283,10 +1294,8 @@ func (s *Stream) startPingThreads() {
 				log.Printf("Warning: video ping failed: %v", err)
 			}
 
-			if seqNum == 1 {
-				log.Printf("Sent first video ping (20 bytes) to %s", serverVideoAddr)
-				log.Printf("  Ping payload (hex): %X", pingPacket)
-				log.Printf("  Ping payload (ASCII): %s", string(pingPacket[:16]))
+			if seqNum <= 3 || seqNum%10 == 0 {
+				log.Printf("Video ping #%d sent to %s (hex: %X)", seqNum, serverVideoAddr, pingPacket)
 			}
 
 			time.Sleep(500 * time.Millisecond)

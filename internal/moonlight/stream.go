@@ -17,7 +17,7 @@ import (
 	"github.com/zalo/moonparty/internal/moonlight/limelight"
 )
 
-// LimelightStream uses moonlight-common-c for streaming
+// LimelightStream uses moonlight-common-go for streaming
 type LimelightStream struct {
 	client *Client
 	ctx    context.Context

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moonparty/moonlight-common-go/crypto"
 	"github.com/moonparty/moonlight-common-go/limelight"
 	"github.com/moonparty/moonlight-common-go/protocol"
 )
@@ -333,10 +334,11 @@ func (s *Stream) decryptPacket(data []byte, seqNum uint16) ([]byte, error) {
 
 // decryptAESCBC decrypts data using AES-CBC
 func decryptAESCBC(key, iv, ciphertext []byte) ([]byte, error) {
-	// This would use crypto/aes and crypto/cipher in a real implementation
-	// For now, return the ciphertext as a placeholder
-	// Real implementation needed for encrypted streams
-	return ciphertext, nil
+	ctx, err := crypto.NewContext(key)
+	if err != nil {
+		return nil, err
+	}
+	return ctx.DecryptCBC(ciphertext, iv)
 }
 
 // Errors

@@ -1,302 +1,113 @@
+// Package limelight provides a pure Go implementation of the Moonlight streaming protocol.
+// This replaces the previous CGO bindings to moonlight-common-c with moonlight-common-go.
 package limelight
 
-/*
-#cgo CFLAGS: -I${SRCDIR}/../../../moonlight-common-c/src -I${SRCDIR}/../../../moonlight-common-c/enet/include -I${SRCDIR}/../../../moonlight-common-c/reedsolomon
-#cgo LDFLAGS: -L${SRCDIR}/../../../build -L${SRCDIR}/../../../build/enet -lmoonlight-common-c -lenet -lcrypto -lm -lpthread -lrt
-
-#include <stdlib.h>
-#include <string.h>
-#include "Limelight.h"
-
-// Forward declarations for Go callbacks
-extern int goDecoderSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags);
-extern void goDecoderStart(void);
-extern void goDecoderStop(void);
-extern void goDecoderCleanup(void);
-extern int goDecoderSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
-
-extern int goAudioInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags);
-extern void goAudioStart(void);
-extern void goAudioStop(void);
-extern void goAudioCleanup(void);
-extern void goAudioDecodeAndPlaySample(char* sampleData, int sampleLength);
-
-extern void goConnectionStageStarting(int stage);
-extern void goConnectionStageComplete(int stage);
-extern void goConnectionStageFailed(int stage, int errorCode);
-extern void goConnectionStarted(void);
-extern void goConnectionTerminated(int errorCode);
-extern void goConnectionLogMessage(char* format);
-extern void goConnectionRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor);
-
-// C wrapper functions that call Go
-static int cDecoderSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
-    return goDecoderSetup(videoFormat, width, height, redrawRate, context, drFlags);
-}
-
-static void cDecoderStart(void) {
-    goDecoderStart();
-}
-
-static void cDecoderStop(void) {
-    goDecoderStop();
-}
-
-static void cDecoderCleanup(void) {
-    goDecoderCleanup();
-}
-
-static int cDecoderSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
-    return goDecoderSubmitDecodeUnit(decodeUnit);
-}
-
-static int cAudioInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags) {
-    return goAudioInit(audioConfiguration, opusConfig, context, arFlags);
-}
-
-static void cAudioStart(void) {
-    goAudioStart();
-}
-
-static void cAudioStop(void) {
-    goAudioStop();
-}
-
-static void cAudioCleanup(void) {
-    goAudioCleanup();
-}
-
-static void cAudioDecodeAndPlaySample(char* sampleData, int sampleLength) {
-    goAudioDecodeAndPlaySample(sampleData, sampleLength);
-}
-
-static void cConnectionStageStarting(int stage) {
-    goConnectionStageStarting(stage);
-}
-
-static void cConnectionStageComplete(int stage) {
-    goConnectionStageComplete(stage);
-}
-
-static void cConnectionStageFailed(int stage, int errorCode) {
-    goConnectionStageFailed(stage, errorCode);
-}
-
-static void cConnectionStarted(void) {
-    goConnectionStarted();
-}
-
-static void cConnectionTerminated(int errorCode) {
-    goConnectionTerminated(errorCode);
-}
-
-static void cConnectionLogMessage(const char* format, ...) {
-    // Simple passthrough of format string (args ignored for now)
-    goConnectionLogMessage((char*)format);
-}
-
-static void cConnectionRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor) {
-    goConnectionRumble(controllerNumber, lowFreqMotor, highFreqMotor);
-}
-
-// Initialize callbacks structures
-static DECODER_RENDERER_CALLBACKS makeDecoderCallbacks() {
-    DECODER_RENDERER_CALLBACKS cbs;
-    memset(&cbs, 0, sizeof(cbs));
-    cbs.setup = cDecoderSetup;
-    cbs.start = cDecoderStart;
-    cbs.stop = cDecoderStop;
-    cbs.cleanup = cDecoderCleanup;
-    cbs.submitDecodeUnit = cDecoderSubmitDecodeUnit;
-    return cbs;
-}
-
-static AUDIO_RENDERER_CALLBACKS makeAudioCallbacks() {
-    AUDIO_RENDERER_CALLBACKS cbs;
-    memset(&cbs, 0, sizeof(cbs));
-    cbs.init = cAudioInit;
-    cbs.start = cAudioStart;
-    cbs.stop = cAudioStop;
-    cbs.cleanup = cAudioCleanup;
-    cbs.decodeAndPlaySample = cAudioDecodeAndPlaySample;
-    return cbs;
-}
-
-static CONNECTION_LISTENER_CALLBACKS makeConnectionCallbacks() {
-    CONNECTION_LISTENER_CALLBACKS cbs;
-    memset(&cbs, 0, sizeof(cbs));
-    cbs.stageStarting = cConnectionStageStarting;
-    cbs.stageComplete = cConnectionStageComplete;
-    cbs.stageFailed = cConnectionStageFailed;
-    cbs.connectionStarted = cConnectionStarted;
-    cbs.connectionTerminated = cConnectionTerminated;
-    cbs.logMessage = cConnectionLogMessage;
-    cbs.rumble = cConnectionRumble;
-    return cbs;
-}
-
-// Helper to start connection with Go callbacks
-static int startConnectionWithGoCallbacks(
-    char* address,
-    char* rtspSessionUrl,
-    int serverCodecModeSupport,
-    char* serverInfoAppVersion,
-    char* serverInfoGfeVersion,
-    int width, int height, int fps, int bitrate,
-    int packetSize, int streamingRemotely,
-    int audioConfiguration,
-    int supportedVideoFormats,
-    unsigned char* riKey, int riKeyLen,
-    int riKeyId,
-    void* renderContext, int drFlags,
-    void* audioContext, int arFlags
-) {
-    SERVER_INFORMATION serverInfo;
-    STREAM_CONFIGURATION streamConfig;
-
-    LiInitializeServerInformation(&serverInfo);
-    serverInfo.address = address;
-    serverInfo.rtspSessionUrl = rtspSessionUrl;
-    serverInfo.serverCodecModeSupport = serverCodecModeSupport;
-
-    LiInitializeStreamConfiguration(&streamConfig);
-    streamConfig.width = width;
-    streamConfig.height = height;
-    streamConfig.fps = fps;
-    streamConfig.bitrate = bitrate;
-    streamConfig.packetSize = packetSize;
-    streamConfig.streamingRemotely = streamingRemotely;
-    streamConfig.audioConfiguration = audioConfiguration;
-    streamConfig.supportedVideoFormats = supportedVideoFormats;
-
-    if (riKey && riKeyLen == 16) {
-        memcpy(streamConfig.remoteInputAesKey, riKey, 16);
-    }
-    streamConfig.remoteInputAesIv[0] = (riKeyId >> 24) & 0xFF;
-    streamConfig.remoteInputAesIv[1] = (riKeyId >> 16) & 0xFF;
-    streamConfig.remoteInputAesIv[2] = (riKeyId >> 8) & 0xFF;
-    streamConfig.remoteInputAesIv[3] = riKeyId & 0xFF;
-
-    DECODER_RENDERER_CALLBACKS drCallbacks = makeDecoderCallbacks();
-    AUDIO_RENDERER_CALLBACKS arCallbacks = makeAudioCallbacks();
-    CONNECTION_LISTENER_CALLBACKS clCallbacks = makeConnectionCallbacks();
-
-    return LiStartConnection(
-        &serverInfo,
-        &streamConfig,
-        &clCallbacks,
-        &drCallbacks,
-        &arCallbacks,
-        renderContext, drFlags,
-        audioContext, arFlags
-    );
-}
-*/
-import "C"
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
-	"unsafe"
+
+	common "github.com/moonparty/moonlight-common-go/limelight"
 )
 
 // Video format constants
 const (
-	VideoFormatH264      = C.VIDEO_FORMAT_H264
-	VideoFormatH265      = C.VIDEO_FORMAT_H265
-	VideoFormatH265Main10 = C.VIDEO_FORMAT_H265_MAIN10
-	VideoFormatAV1Main8  = C.VIDEO_FORMAT_AV1_MAIN8
-	VideoFormatAV1Main10 = C.VIDEO_FORMAT_AV1_MAIN10
+	VideoFormatH264       = int(common.VideoFormatH264)
+	VideoFormatH265       = int(common.VideoFormatH265)
+	VideoFormatH265Main10 = int(common.VideoFormatH265)
+	VideoFormatAV1Main8   = int(common.VideoFormatAV1)
+	VideoFormatAV1Main10  = int(common.VideoFormatAV1)
 )
 
 // Audio configuration constants
 const (
-	AudioConfigStereo = C.AUDIO_CONFIGURATION_STEREO
-	AudioConfig51     = C.AUDIO_CONFIGURATION_51_SURROUND
-	AudioConfig71     = C.AUDIO_CONFIGURATION_71_SURROUND
+	AudioConfigStereo = int(common.AudioConfigStereo)
+	AudioConfig51     = int(common.AudioConfigSurround51)
+	AudioConfig71     = int(common.AudioConfigSurround71)
 )
 
 // Streaming location constants
 const (
-	StreamingLocal  = C.STREAM_CFG_LOCAL
-	StreamingRemote = C.STREAM_CFG_REMOTE
-	StreamingAuto   = C.STREAM_CFG_AUTO
+	StreamingLocal  = 0
+	StreamingRemote = 1
+	StreamingAuto   = 2
 )
 
 // Decoder return codes
 const (
-	DrOk      = C.DR_OK
-	DrNeedIDR = C.DR_NEED_IDR
+	DrOk      = 0
+	DrNeedIDR = -1
 )
 
 // Button flags for controller input
 const (
-	ButtonA       = C.A_FLAG
-	ButtonB       = C.B_FLAG
-	ButtonX       = C.X_FLAG
-	ButtonY       = C.Y_FLAG
-	ButtonUp      = C.UP_FLAG
-	ButtonDown    = C.DOWN_FLAG
-	ButtonLeft    = C.LEFT_FLAG
-	ButtonRight   = C.RIGHT_FLAG
-	ButtonLB      = C.LB_FLAG
-	ButtonRB      = C.RB_FLAG
-	ButtonPlay    = C.PLAY_FLAG
-	ButtonBack    = C.BACK_FLAG
-	ButtonLSClick = C.LS_CLK_FLAG
-	ButtonRSClick = C.RS_CLK_FLAG
-	ButtonSpecial = C.SPECIAL_FLAG
+	ButtonA       = common.ButtonA
+	ButtonB       = common.ButtonB
+	ButtonX       = common.ButtonX
+	ButtonY       = common.ButtonY
+	ButtonUp      = common.ButtonUp
+	ButtonDown    = common.ButtonDown
+	ButtonLeft    = common.ButtonLeft
+	ButtonRight   = common.ButtonRight
+	ButtonLB      = common.ButtonLeftBumper
+	ButtonRB      = common.ButtonRightBumper
+	ButtonPlay    = common.ButtonStart
+	ButtonBack    = common.ButtonBack
+	ButtonLSClick = common.ButtonLeftStick
+	ButtonRSClick = common.ButtonRightStick
+	ButtonSpecial = common.ButtonHome
 )
 
 // Mouse button constants
 const (
-	MouseButtonLeft   = C.BUTTON_LEFT
-	MouseButtonMiddle = C.BUTTON_MIDDLE
-	MouseButtonRight  = C.BUTTON_RIGHT
-	MouseButtonX1     = C.BUTTON_X1
-	MouseButtonX2     = C.BUTTON_X2
+	MouseButtonLeft   = common.MouseButtonLeft
+	MouseButtonMiddle = common.MouseButtonMiddle
+	MouseButtonRight  = common.MouseButtonRight
+	MouseButtonX1     = common.MouseButtonX1
+	MouseButtonX2     = common.MouseButtonX2
 
-	ButtonActionPress   = C.BUTTON_ACTION_PRESS
-	ButtonActionRelease = C.BUTTON_ACTION_RELEASE
+	ButtonActionPress   = common.MouseActionPress
+	ButtonActionRelease = common.MouseActionRelease
 )
 
 // Key action constants
 const (
-	KeyActionDown = C.KEY_ACTION_DOWN
-	KeyActionUp   = C.KEY_ACTION_UP
+	KeyActionDown = common.KeyActionDown
+	KeyActionUp   = common.KeyActionUp
 )
 
 // Key modifier constants
 const (
-	ModifierShift = C.MODIFIER_SHIFT
-	ModifierCtrl  = C.MODIFIER_CTRL
-	ModifierAlt   = C.MODIFIER_ALT
-	ModifierMeta  = C.MODIFIER_META
+	ModifierShift = common.ModifierShift
+	ModifierCtrl  = common.ModifierCtrl
+	ModifierAlt   = common.ModifierAlt
+	ModifierMeta  = common.ModifierMeta
 )
 
 // Connection stages
 const (
-	StageNone              = C.STAGE_NONE
-	StagePlatformInit      = C.STAGE_PLATFORM_INIT
-	StageNameResolution    = C.STAGE_NAME_RESOLUTION
-	StageAudioStreamInit   = C.STAGE_AUDIO_STREAM_INIT
-	StageRTSPHandshake     = C.STAGE_RTSP_HANDSHAKE
-	StageControlStreamInit = C.STAGE_CONTROL_STREAM_INIT
-	StageVideoStreamInit   = C.STAGE_VIDEO_STREAM_INIT
-	StageInputStreamInit   = C.STAGE_INPUT_STREAM_INIT
-	StageControlStreamStart = C.STAGE_CONTROL_STREAM_START
-	StageVideoStreamStart   = C.STAGE_VIDEO_STREAM_START
-	StageAudioStreamStart   = C.STAGE_AUDIO_STREAM_START
-	StageInputStreamStart   = C.STAGE_INPUT_STREAM_START
+	StageNone               = int(common.StageNone)
+	StagePlatformInit       = int(common.StagePlatformInit)
+	StageNameResolution     = int(common.StagePlatformInit) // Mapped to platform init
+	StageAudioStreamInit    = int(common.StageAudioStreamInit)
+	StageRTSPHandshake      = int(common.StageRTSPHandshake)
+	StageControlStreamInit  = int(common.StageControlStreamInit)
+	StageVideoStreamInit    = int(common.StageVideoStreamInit)
+	StageInputStreamInit    = int(common.StageInputStreamInit)
+	StageControlStreamStart = int(common.StageControlStreamStart)
+	StageVideoStreamStart   = int(common.StageVideoStreamStart)
+	StageAudioStreamStart   = int(common.StageAudioStreamStart)
+	StageInputStreamStart   = int(common.StageInputStreamStart)
 )
 
 // DecodeUnit represents a video frame to decode
 type DecodeUnit struct {
-	FrameNumber     int
-	FrameType       int
-	Data            []byte
-	ReceiveTimeUs   int64
-	EnqueueTimeUs   int64
+	FrameNumber        int
+	FrameType          int
+	Data               []byte
+	ReceiveTimeUs      int64
+	EnqueueTimeUs      int64
 	PresentationTimeUs int64
 }
 
@@ -327,18 +138,22 @@ type Callbacks struct {
 	OnAudioSample  func(data []byte)
 
 	// Connection callbacks
-	OnStageStarting func(stage int)
-	OnStageComplete func(stage int)
-	OnStageFailed   func(stage, errorCode int)
-	OnConnectionStarted func()
+	OnStageStarting        func(stage int)
+	OnStageComplete        func(stage int)
+	OnStageFailed          func(stage, errorCode int)
+	OnConnectionStarted    func()
 	OnConnectionTerminated func(errorCode int)
-	OnLogMessage func(msg string)
-	OnRumble func(controllerNumber, lowFreq, highFreq uint16)
+	OnLogMessage           func(msg string)
+	OnRumble               func(controllerNumber, lowFreq, highFreq uint16)
 }
 
 var (
 	globalCallbacks *Callbacks
 	callbackMutex   sync.RWMutex
+	activeClient    *common.Client
+	clientMutex     sync.Mutex
+	clientCtx       context.Context
+	clientCancel    context.CancelFunc
 )
 
 // SetCallbacks sets the global callbacks for limelight events
@@ -350,324 +165,31 @@ func SetCallbacks(cbs *Callbacks) {
 
 // StreamConfig holds streaming configuration
 type StreamConfig struct {
-	Width                int
-	Height               int
-	FPS                  int
-	Bitrate              int
-	PacketSize           int
-	StreamingRemotely    int
-	AudioConfiguration   int
+	Width                 int
+	Height                int
+	FPS                   int
+	Bitrate               int
+	PacketSize            int
+	StreamingRemotely     int
+	AudioConfiguration    int
 	SupportedVideoFormats int
-	RiKey                []byte
-	RiKeyID              int
+	RiKey                 []byte
+	RiKeyID               int
 }
 
 // ServerInfo holds server information
 type ServerInfo struct {
-	Address              string
-	RtspSessionUrl       string
+	Address                string
+	RtspSessionUrl         string
 	ServerCodecModeSupport int
-	AppVersion           string
-	GfeVersion           string
+	AppVersion             string
+	GfeVersion             string
 }
 
-// StartConnection starts a streaming connection
-func StartConnection(serverInfo *ServerInfo, streamConfig *StreamConfig) error {
-	cAddress := C.CString(serverInfo.Address)
-	defer C.free(unsafe.Pointer(cAddress))
+// callbackAdapter implements the common.ConnectionCallbacks interface
+type callbackAdapter struct{}
 
-	var cRtspUrl *C.char
-	if serverInfo.RtspSessionUrl != "" {
-		cRtspUrl = C.CString(serverInfo.RtspSessionUrl)
-		defer C.free(unsafe.Pointer(cRtspUrl))
-	}
-
-	var riKeyPtr *C.uchar
-	if len(streamConfig.RiKey) == 16 {
-		riKeyPtr = (*C.uchar)(unsafe.Pointer(&streamConfig.RiKey[0]))
-	}
-
-	result := C.startConnectionWithGoCallbacks(
-		cAddress,
-		cRtspUrl,
-		C.int(serverInfo.ServerCodecModeSupport),
-		nil, // serverInfoAppVersion
-		nil, // serverInfoGfeVersion
-		C.int(streamConfig.Width),
-		C.int(streamConfig.Height),
-		C.int(streamConfig.FPS),
-		C.int(streamConfig.Bitrate),
-		C.int(streamConfig.PacketSize),
-		C.int(streamConfig.StreamingRemotely),
-		C.int(streamConfig.AudioConfiguration),
-		C.int(streamConfig.SupportedVideoFormats),
-		riKeyPtr,
-		C.int(len(streamConfig.RiKey)),
-		C.int(streamConfig.RiKeyID),
-		nil, 0, // renderContext, drFlags
-		nil, 0, // audioContext, arFlags
-	)
-
-	if result != 0 {
-		return fmt.Errorf("LiStartConnection failed with code %d", result)
-	}
-	return nil
-}
-
-// StopConnection stops the current streaming connection
-func StopConnection() {
-	C.LiStopConnection()
-}
-
-// InterruptConnection interrupts the current connection
-func InterruptConnection() {
-	C.LiInterruptConnection()
-}
-
-// GetStageName returns the human-readable name of a connection stage
-func GetStageName(stage int) string {
-	cName := C.LiGetStageName(C.int(stage))
-	return C.GoString(cName)
-}
-
-// SendMouseMoveEvent sends a relative mouse move event
-func SendMouseMoveEvent(deltaX, deltaY int16) error {
-	result := C.LiSendMouseMoveEvent(C.short(deltaX), C.short(deltaY))
-	if result != 0 {
-		return fmt.Errorf("LiSendMouseMoveEvent failed: %d", result)
-	}
-	return nil
-}
-
-// SendMousePositionEvent sends an absolute mouse position event
-func SendMousePositionEvent(x, y, refWidth, refHeight int16) error {
-	result := C.LiSendMousePositionEvent(C.short(x), C.short(y), C.short(refWidth), C.short(refHeight))
-	if result != 0 {
-		return fmt.Errorf("LiSendMousePositionEvent failed: %d", result)
-	}
-	return nil
-}
-
-// SendMouseButtonEvent sends a mouse button press/release event
-func SendMouseButtonEvent(action int8, button int) error {
-	result := C.LiSendMouseButtonEvent(C.char(action), C.int(button))
-	if result != 0 {
-		return fmt.Errorf("LiSendMouseButtonEvent failed: %d", result)
-	}
-	return nil
-}
-
-// SendScrollEvent sends a mouse scroll event
-func SendScrollEvent(scrollClicks int8) error {
-	result := C.LiSendScrollEvent(C.schar(scrollClicks))
-	if result != 0 {
-		return fmt.Errorf("LiSendScrollEvent failed: %d", result)
-	}
-	return nil
-}
-
-// SendKeyboardEvent sends a keyboard key event
-func SendKeyboardEvent(keyCode int16, keyAction int8, modifiers int8) error {
-	result := C.LiSendKeyboardEvent(C.short(keyCode), C.char(keyAction), C.char(modifiers))
-	if result != 0 {
-		return fmt.Errorf("LiSendKeyboardEvent failed: %d", result)
-	}
-	return nil
-}
-
-// SendControllerEvent sends a single controller input event
-func SendControllerEvent(buttonFlags int, leftTrigger, rightTrigger uint8, leftStickX, leftStickY, rightStickX, rightStickY int16) error {
-	result := C.LiSendControllerEvent(
-		C.int(buttonFlags),
-		C.uchar(leftTrigger),
-		C.uchar(rightTrigger),
-		C.short(leftStickX),
-		C.short(leftStickY),
-		C.short(rightStickX),
-		C.short(rightStickY),
-	)
-	if result != 0 {
-		return fmt.Errorf("LiSendControllerEvent failed: %d", result)
-	}
-	return nil
-}
-
-// SendMultiControllerEvent sends input for a specific controller
-func SendMultiControllerEvent(controllerNumber int16, activeGamepadMask int16, buttonFlags int, leftTrigger, rightTrigger uint8, leftStickX, leftStickY, rightStickX, rightStickY int16) error {
-	result := C.LiSendMultiControllerEvent(
-		C.short(controllerNumber),
-		C.short(activeGamepadMask),
-		C.int(buttonFlags),
-		C.uchar(leftTrigger),
-		C.uchar(rightTrigger),
-		C.short(leftStickX),
-		C.short(leftStickY),
-		C.short(rightStickX),
-		C.short(rightStickY),
-	)
-	if result != 0 {
-		return fmt.Errorf("LiSendMultiControllerEvent failed: %d", result)
-	}
-	return nil
-}
-
-// RequestIDRFrame requests an IDR (keyframe) from the server
-func RequestIDRFrame() {
-	C.LiRequestIdrFrame()
-}
-
-//export goDecoderSetup
-func goDecoderSetup(videoFormat, width, height, redrawRate C.int, context unsafe.Pointer, drFlags C.int) C.int {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnDecoderSetup != nil {
-		cbs.OnDecoderSetup(int(videoFormat), int(width), int(height), int(redrawRate))
-	}
-	return 0
-}
-
-//export goDecoderStart
-func goDecoderStart() {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnDecoderStart != nil {
-		cbs.OnDecoderStart()
-	}
-}
-
-//export goDecoderStop
-func goDecoderStop() {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnDecoderStop != nil {
-		cbs.OnDecoderStop()
-	}
-}
-
-//export goDecoderCleanup
-func goDecoderCleanup() {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnDecoderCleanup != nil {
-		cbs.OnDecoderCleanup()
-	}
-}
-
-//export goDecoderSubmitDecodeUnit
-func goDecoderSubmitDecodeUnit(decodeUnit *C.DECODE_UNIT) C.int {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs == nil || cbs.OnDecodeUnit == nil {
-		return C.DR_OK
-	}
-
-	// Convert C DECODE_UNIT to Go DecodeUnit
-	unit := &DecodeUnit{
-		FrameNumber:        int(decodeUnit.frameNumber),
-		FrameType:          int(decodeUnit.frameType),
-		ReceiveTimeUs:      int64(decodeUnit.receiveTimeUs),
-		EnqueueTimeUs:      int64(decodeUnit.enqueueTimeUs),
-		PresentationTimeUs: int64(decodeUnit.presentationTimeUs),
-	}
-
-	// Collect all buffer data
-	totalLen := int(decodeUnit.fullLength)
-	unit.Data = make([]byte, 0, totalLen)
-
-	entry := decodeUnit.bufferList
-	for entry != nil {
-		data := C.GoBytes(unsafe.Pointer(entry.data), C.int(entry.length))
-		unit.Data = append(unit.Data, data...)
-		entry = entry.next
-	}
-
-	result := cbs.OnDecodeUnit(unit)
-	return C.int(result)
-}
-
-//export goAudioInit
-func goAudioInit(audioConfiguration C.int, opusConfig *C.OPUS_MULTISTREAM_CONFIGURATION, context unsafe.Pointer, arFlags C.int) C.int {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs == nil || cbs.OnAudioInit == nil {
-		return 0
-	}
-
-	cfg := &OpusConfig{
-		SampleRate:      int(opusConfig.sampleRate),
-		ChannelCount:    int(opusConfig.channelCount),
-		Streams:         int(opusConfig.streams),
-		CoupledStreams:  int(opusConfig.coupledStreams),
-		SamplesPerFrame: int(opusConfig.samplesPerFrame),
-	}
-	for i := 0; i < 8; i++ {
-		cfg.Mapping[i] = byte(opusConfig.mapping[i])
-	}
-
-	return C.int(cbs.OnAudioInit(int(audioConfiguration), cfg))
-}
-
-//export goAudioStart
-func goAudioStart() {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnAudioStart != nil {
-		cbs.OnAudioStart()
-	}
-}
-
-//export goAudioStop
-func goAudioStop() {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnAudioStop != nil {
-		cbs.OnAudioStop()
-	}
-}
-
-//export goAudioCleanup
-func goAudioCleanup() {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs != nil && cbs.OnAudioCleanup != nil {
-		cbs.OnAudioCleanup()
-	}
-}
-
-//export goAudioDecodeAndPlaySample
-func goAudioDecodeAndPlaySample(sampleData *C.char, sampleLength C.int) {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	if cbs == nil || cbs.OnAudioSample == nil {
-		return
-	}
-
-	data := C.GoBytes(unsafe.Pointer(sampleData), sampleLength)
-	cbs.OnAudioSample(data)
-}
-
-//export goConnectionStageStarting
-func goConnectionStageStarting(stage C.int) {
+func (a *callbackAdapter) StageStarting(stage common.Stage) {
 	callbackMutex.RLock()
 	cbs := globalCallbacks
 	callbackMutex.RUnlock()
@@ -678,8 +200,7 @@ func goConnectionStageStarting(stage C.int) {
 	log.Printf("Connection stage starting: %s", GetStageName(int(stage)))
 }
 
-//export goConnectionStageComplete
-func goConnectionStageComplete(stage C.int) {
+func (a *callbackAdapter) StageComplete(stage common.Stage) {
 	callbackMutex.RLock()
 	cbs := globalCallbacks
 	callbackMutex.RUnlock()
@@ -690,20 +211,19 @@ func goConnectionStageComplete(stage C.int) {
 	log.Printf("Connection stage complete: %s", GetStageName(int(stage)))
 }
 
-//export goConnectionStageFailed
-func goConnectionStageFailed(stage, errorCode C.int) {
+func (a *callbackAdapter) StageFailed(stage common.Stage, err error) {
 	callbackMutex.RLock()
 	cbs := globalCallbacks
 	callbackMutex.RUnlock()
 
+	errorCode := -1
 	if cbs != nil && cbs.OnStageFailed != nil {
-		cbs.OnStageFailed(int(stage), int(errorCode))
+		cbs.OnStageFailed(int(stage), errorCode)
 	}
-	log.Printf("Connection stage failed: %s (error %d)", GetStageName(int(stage)), errorCode)
+	log.Printf("Connection stage failed: %s (error: %v)", GetStageName(int(stage)), err)
 }
 
-//export goConnectionStarted
-func goConnectionStarted() {
+func (a *callbackAdapter) ConnectionStarted() {
 	callbackMutex.RLock()
 	cbs := globalCallbacks
 	callbackMutex.RUnlock()
@@ -714,38 +234,406 @@ func goConnectionStarted() {
 	log.Println("Connection started")
 }
 
-//export goConnectionTerminated
-func goConnectionTerminated(errorCode C.int) {
+func (a *callbackAdapter) ConnectionTerminated(errorCode int) {
 	callbackMutex.RLock()
 	cbs := globalCallbacks
 	callbackMutex.RUnlock()
 
 	if cbs != nil && cbs.OnConnectionTerminated != nil {
-		cbs.OnConnectionTerminated(int(errorCode))
+		cbs.OnConnectionTerminated(errorCode)
 	}
 	log.Printf("Connection terminated (error %d)", errorCode)
 }
 
-//export goConnectionLogMessage
-func goConnectionLogMessage(format *C.char) {
-	callbackMutex.RLock()
-	cbs := globalCallbacks
-	callbackMutex.RUnlock()
-
-	msg := C.GoString(format)
-	if cbs != nil && cbs.OnLogMessage != nil {
-		cbs.OnLogMessage(msg)
-	}
-	log.Printf("[limelight] %s", msg)
+func (a *callbackAdapter) ConnectionStatusUpdate(status common.ConnectionStatus) {
+	// Log status updates
+	log.Printf("Connection status: %v", status)
 }
 
-//export goConnectionRumble
-func goConnectionRumble(controllerNumber, lowFreqMotor, highFreqMotor C.ushort) {
+func (a *callbackAdapter) SetHDRMode(enabled bool) {
+	log.Printf("HDR mode: %v", enabled)
+}
+
+func (a *callbackAdapter) Rumble(controllerNumber, lowFreq, highFreq uint16) {
 	callbackMutex.RLock()
 	cbs := globalCallbacks
 	callbackMutex.RUnlock()
 
 	if cbs != nil && cbs.OnRumble != nil {
-		cbs.OnRumble(uint16(controllerNumber), uint16(lowFreqMotor), uint16(highFreqMotor))
+		cbs.OnRumble(controllerNumber, lowFreq, highFreq)
+	}
+}
+
+func (a *callbackAdapter) RumbleTriggers(controllerNumber, leftTrigger, rightTrigger uint16) {
+	// Trigger rumble not exposed in old API
+}
+
+func (a *callbackAdapter) SetMotionEventState(controllerNumber uint16, motionType common.MotionType, reportRateHz uint16) {
+	// Motion events not exposed in old API
+}
+
+func (a *callbackAdapter) SetControllerLED(controllerNumber uint16, r, g, b uint8) {
+	// LED control not exposed in old API
+}
+
+// decoderAdapter implements the common.DecoderCallbacks interface
+type decoderAdapter struct{}
+
+func (d *decoderAdapter) Setup(format common.VideoFormat, width, height, fps int, context interface{}, flags int) error {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnDecoderSetup != nil {
+		cbs.OnDecoderSetup(int(format), width, height, fps)
+	}
+	return nil
+}
+
+func (d *decoderAdapter) Start() {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnDecoderStart != nil {
+		cbs.OnDecoderStart()
+	}
+}
+
+func (d *decoderAdapter) Stop() {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnDecoderStop != nil {
+		cbs.OnDecoderStop()
+	}
+}
+
+func (d *decoderAdapter) Cleanup() {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnDecoderCleanup != nil {
+		cbs.OnDecoderCleanup()
+	}
+}
+
+func (d *decoderAdapter) SubmitDecodeUnit(unit *common.DecodeUnit) int {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs == nil || cbs.OnDecodeUnit == nil {
+		return DrOk
+	}
+
+	// Convert common.DecodeUnit to local DecodeUnit
+	du := &DecodeUnit{
+		FrameNumber:        int(unit.FrameNumber),
+		FrameType:          int(unit.FrameType),
+		PresentationTimeUs: int64(unit.PresentationTimeMs * 1000),
+		EnqueueTimeUs:      int64(unit.EnqueueTimeMs * 1000),
+	}
+
+	// Collect all buffer data
+	totalLen := 0
+	for _, buf := range unit.BufferList {
+		totalLen += buf.Length
+	}
+	du.Data = make([]byte, 0, totalLen)
+	for _, buf := range unit.BufferList {
+		du.Data = append(du.Data, buf.Data[buf.Offset:buf.Offset+buf.Length]...)
+	}
+
+	return cbs.OnDecodeUnit(du)
+}
+
+func (d *decoderAdapter) Capabilities() int {
+	return 0
+}
+
+// audioAdapter implements the common.AudioCallbacks interface
+type audioAdapter struct{}
+
+func (a *audioAdapter) Init(audioConfig common.AudioConfiguration, opusConfig *common.OpusConfig, context interface{}, flags int) error {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs == nil || cbs.OnAudioInit == nil {
+		return nil
+	}
+
+	cfg := &OpusConfig{
+		SampleRate:      opusConfig.SampleRate,
+		ChannelCount:    opusConfig.ChannelCount,
+		Streams:         opusConfig.Streams,
+		CoupledStreams:  opusConfig.CoupledStreams,
+		SamplesPerFrame: opusConfig.SamplesPerFrame,
+	}
+	for i := 0; i < len(opusConfig.ChannelMapping) && i < 8; i++ {
+		cfg.Mapping[i] = opusConfig.ChannelMapping[i]
+	}
+
+	result := cbs.OnAudioInit(int(audioConfig), cfg)
+	if result != 0 {
+		return fmt.Errorf("audio init failed: %d", result)
+	}
+	return nil
+}
+
+func (a *audioAdapter) Start() {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnAudioStart != nil {
+		cbs.OnAudioStart()
+	}
+}
+
+func (a *audioAdapter) Stop() {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnAudioStop != nil {
+		cbs.OnAudioStop()
+	}
+}
+
+func (a *audioAdapter) Cleanup() {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnAudioCleanup != nil {
+		cbs.OnAudioCleanup()
+	}
+}
+
+func (a *audioAdapter) DecodeAndPlaySample(data []byte) {
+	callbackMutex.RLock()
+	cbs := globalCallbacks
+	callbackMutex.RUnlock()
+
+	if cbs != nil && cbs.OnAudioSample != nil {
+		cbs.OnAudioSample(data)
+	}
+}
+
+func (a *audioAdapter) Capabilities() int {
+	return 0
+}
+
+// StartConnection starts a streaming connection
+func StartConnection(serverInfo *ServerInfo, streamConfig *StreamConfig) error {
+	clientMutex.Lock()
+	defer clientMutex.Unlock()
+
+	// Stop any existing connection
+	if activeClient != nil {
+		activeClient.Stop()
+		activeClient = nil
+	}
+
+	// Build configuration
+	config := common.StreamConfiguration{
+		Width:                 streamConfig.Width,
+		Height:                streamConfig.Height,
+		FPS:                   streamConfig.FPS,
+		Bitrate:               streamConfig.Bitrate,
+		PacketSize:            streamConfig.PacketSize,
+		StreamingRemotely:     streamConfig.StreamingRemotely,
+		AudioConfiguration:    common.AudioConfiguration(streamConfig.AudioConfiguration),
+		SupportedVideoFormats: common.VideoFormat(streamConfig.SupportedVideoFormats),
+	}
+
+	// Set encryption keys
+	if len(streamConfig.RiKey) == 16 {
+		config.RemoteInputAesKey = make([]byte, 16)
+		copy(config.RemoteInputAesKey, streamConfig.RiKey)
+	}
+
+	// Set IV from key ID
+	config.RemoteInputAesIV = make([]byte, 16)
+	config.RemoteInputAesIV[0] = byte(streamConfig.RiKeyID >> 24)
+	config.RemoteInputAesIV[1] = byte(streamConfig.RiKeyID >> 16)
+	config.RemoteInputAesIV[2] = byte(streamConfig.RiKeyID >> 8)
+	config.RemoteInputAesIV[3] = byte(streamConfig.RiKeyID)
+
+	// Build server info
+	srvInfo := common.ServerInformation{
+		Address:                  serverInfo.Address,
+		ServerCodecModeSupport:   uint32(serverInfo.ServerCodecModeSupport),
+		ServerInfoAppVersion:     serverInfo.AppVersion,
+	}
+
+	// Create client with adapters
+	activeClient = common.NewClient(
+		config,
+		srvInfo,
+		&decoderAdapter{},
+		&audioAdapter{},
+		&callbackAdapter{},
+	)
+
+	// Start connection
+	clientCtx, clientCancel = context.WithCancel(context.Background())
+	if err := activeClient.Start(clientCtx); err != nil {
+		activeClient = nil
+		clientCancel()
+		return fmt.Errorf("connection failed: %w", err)
+	}
+
+	return nil
+}
+
+// StopConnection stops the current streaming connection
+func StopConnection() {
+	clientMutex.Lock()
+	defer clientMutex.Unlock()
+
+	if clientCancel != nil {
+		clientCancel()
+	}
+
+	if activeClient != nil {
+		activeClient.Stop()
+		activeClient = nil
+	}
+}
+
+// InterruptConnection interrupts the current connection
+func InterruptConnection() {
+	StopConnection()
+}
+
+// GetStageName returns the human-readable name of a connection stage
+func GetStageName(stage int) string {
+	switch common.Stage(stage) {
+	case common.StageNone:
+		return "None"
+	case common.StagePlatformInit:
+		return "Platform initialization"
+	case common.StageRTSPHandshake:
+		return "RTSP handshake"
+	case common.StageControlStreamInit:
+		return "Control stream initialization"
+	case common.StageVideoStreamInit:
+		return "Video stream initialization"
+	case common.StageAudioStreamInit:
+		return "Audio stream initialization"
+	case common.StageInputStreamInit:
+		return "Input stream initialization"
+	case common.StageControlStreamStart:
+		return "Control stream start"
+	case common.StageVideoStreamStart:
+		return "Video stream start"
+	case common.StageAudioStreamStart:
+		return "Audio stream start"
+	case common.StageInputStreamStart:
+		return "Input stream start"
+	case common.StageComplete:
+		return "Complete"
+	default:
+		return fmt.Sprintf("Unknown stage %d", stage)
+	}
+}
+
+// SendMouseMoveEvent sends a relative mouse move event
+func SendMouseMoveEvent(deltaX, deltaY int16) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendMouseMove(deltaX, deltaY)
+}
+
+// SendMousePositionEvent sends an absolute mouse position event
+func SendMousePositionEvent(x, y, refWidth, refHeight int16) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendMousePosition(x, y, refWidth, refHeight)
+}
+
+// SendMouseButtonEvent sends a mouse button press/release event
+func SendMouseButtonEvent(action int8, button int) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendMouseButton(uint8(action), button)
+}
+
+// SendScrollEvent sends a mouse scroll event
+func SendScrollEvent(scrollClicks int8) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendScroll(int16(scrollClicks) * 120) // Convert to wheel delta
+}
+
+// SendKeyboardEvent sends a keyboard key event
+func SendKeyboardEvent(keyCode int16, keyAction int8, modifiers int8) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendKeyboard(keyCode, uint8(keyAction), uint8(modifiers))
+}
+
+// SendControllerEvent sends a single controller input event
+func SendControllerEvent(buttonFlags int, leftTrigger, rightTrigger uint8, leftStickX, leftStickY, rightStickX, rightStickY int16) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendController(buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY)
+}
+
+// SendMultiControllerEvent sends input for a specific controller
+func SendMultiControllerEvent(controllerNumber int16, activeGamepadMask int16, buttonFlags int, leftTrigger, rightTrigger uint8, leftStickX, leftStickY, rightStickX, rightStickY int16) error {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+	return client.SendMultiController(controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY)
+}
+
+// RequestIDRFrame requests an IDR (keyframe) from the server
+func RequestIDRFrame() {
+	clientMutex.Lock()
+	client := activeClient
+	clientMutex.Unlock()
+
+	if client != nil {
+		client.RequestIDRFrame()
 	}
 }
