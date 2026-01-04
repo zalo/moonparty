@@ -3,7 +3,6 @@ package rtsp
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -94,11 +93,15 @@ func (c *Client) DoDescribe() (*Response, error) {
 }
 
 // DoSetup performs the RTSP SETUP requests for all streams
+// clientPorts specifies local UDP ports for video, audio, and control
 func (c *Client) DoSetup() (*StreamPorts, error) {
 	ports := &StreamPorts{}
 
-	// Setup video stream
-	resp, err := c.doRequest("SETUP", "streamid=video", nil, "")
+	// Setup video stream with Transport header
+	headers := map[string]string{
+		"Transport": "unicast;client_port=47998",
+	}
+	resp, err := c.doRequest("SETUP", "streamid=video", headers, "")
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +112,10 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	ports.VideoPort = parseTransportPort(resp.Headers["Transport"])
 
 	// Setup audio stream
-	resp, err = c.doRequest("SETUP", "streamid=audio", nil, "")
+	headers = map[string]string{
+		"Transport": "unicast;client_port=48000",
+	}
+	resp, err = c.doRequest("SETUP", "streamid=audio", headers, "")
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +125,10 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	ports.AudioPort = parseTransportPort(resp.Headers["Transport"])
 
 	// Setup control stream
-	resp, err = c.doRequest("SETUP", "streamid=control", nil, "")
+	headers = map[string]string{
+		"Transport": "unicast;client_port=47999",
+	}
+	resp, err = c.doRequest("SETUP", "streamid=control", headers, "")
 	if err != nil {
 		return nil, err
 	}
@@ -142,17 +151,26 @@ func (c *Client) DoTeardown() (*Response, error) {
 }
 
 // doRequest performs an RTSP request and returns the response
+// NOTE: Sunshine closes the connection after each response, so we reconnect for each request
 func (c *Client) doRequest(method, uri string, headers map[string]string, body string) (*Response, error) {
-	if c.conn == nil {
-		return nil, errors.New("not connected")
+	// Reconnect for each request (Sunshine closes connection after each response)
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+	if err := c.Connect(); err != nil {
+		return nil, err
 	}
 
 	c.cseq++
 
-	// Build request
+	// Build request - use rtsp://host:port format (no path) for Sunshine compatibility
 	var req strings.Builder
-	req.WriteString(fmt.Sprintf("%s rtsp://%s:%d/%s RTSP/1.0\r\n", method, c.serverIP, c.serverPort, uri))
+	target := fmt.Sprintf("rtsp://%s:%d", c.serverIP, c.serverPort)
+	req.WriteString(fmt.Sprintf("%s %s RTSP/1.0\r\n", method, target))
 	req.WriteString(fmt.Sprintf("CSeq: %d\r\n", c.cseq))
+	req.WriteString("X-GS-ClientVersion: 14\r\n")
+	req.WriteString(fmt.Sprintf("Host: %s\r\n", c.serverIP))
 
 	if c.sessionID != "" {
 		req.WriteString(fmt.Sprintf("Session: %s\r\n", c.sessionID))
@@ -271,42 +289,39 @@ func BuildSDP(clientVersion, clientWidth, clientHeight, fps, packetSize int,
 	sdp.WriteString("v=0\r\n")
 	sdp.WriteString("o=- 0 0 IN IP4 0.0.0.0\r\n")
 	sdp.WriteString("s=NVIDIA Streaming Client\r\n")
-	sdp.WriteString("c=IN IP4 0.0.0.0\r\n")
-	sdp.WriteString("t=0 0\r\n")
 
 	// Video parameters
-	sdp.WriteString(fmt.Sprintf("m=video %d\r\n", 48000))
 	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].clientViewportWd:%d\r\n", clientWidth))
 	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].clientViewportHt:%d\r\n", clientHeight))
 	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].maxFPS:%d\r\n", fps))
+	sdp.WriteString("a=x-nv-vqos[0].bw.maximumBitrateKbps:20000\r\n")
 	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].packetSize:%d\r\n", packetSize))
-
-	// Codec support
-	if videoFormats&0x0001 != 0 {
-		sdp.WriteString("a=x-nv-video[0].clientSupportHevc:0\r\n")
-	}
-	if videoFormats&0x0100 != 0 {
-		sdp.WriteString("a=x-nv-video[0].clientSupportHevc:1\r\n")
-	}
-	if videoFormats&0x0200 != 0 {
-		sdp.WriteString("a=x-nv-video[0].clientSupportAv1:1\r\n")
-	}
+	sdp.WriteString("a=x-nv-video[0].rateControlMode:4\r\n")
+	sdp.WriteString("a=x-nv-video[0].timeoutLengthMs:7000\r\n")
+	sdp.WriteString("a=x-nv-video[0].framesWithInvalidRefThreshold:0\r\n")
+	sdp.WriteString("a=x-nv-vqos[0].bitStreamFormat:0\r\n") // 0=H264, 1=HEVC
+	sdp.WriteString("a=x-nv-video[0].encoderCscMode:0\r\n")
+	sdp.WriteString("a=x-nv-video[0].maxNumReferenceFrames:1\r\n")
+	sdp.WriteString("a=x-nv-video[0].videoEncoderSlicesPerFrame:1\r\n")
 
 	// Audio parameters
-	sdp.WriteString(fmt.Sprintf("m=audio %d\r\n", 48001))
-	sdp.WriteString(fmt.Sprintf("a=x-nv-audio.surround:%d\r\n", audioConfig))
+	sdp.WriteString("a=x-nv-audio.surround.numChannels:2\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.channelMask:3\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.enable:0\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.AudioQuality:0\r\n")
+	sdp.WriteString("a=x-nv-aqos.packetDuration:5\r\n")
 
-	// Encryption
-	if len(riKey) > 0 {
-		sdp.WriteString(fmt.Sprintf("a=x-nv-rikeyid:%d\r\n", riKeyID))
-		sdp.WriteString(fmt.Sprintf("a=x-nv-rikey:%x\r\n", riKey))
-	}
-
-	if gcmSupported {
-		sdp.WriteString("a=x-nv-gcmSupport:1\r\n")
-	}
-
-	sdp.WriteString(fmt.Sprintf("a=x-nv-clientVersion:%d\r\n", clientVersion))
+	// General settings
+	sdp.WriteString("a=x-nv-general.useReliableUdp:1\r\n")
+	sdp.WriteString("a=x-nv-vqos[0].fec.minRequiredFecPackets:0\r\n")
+	sdp.WriteString("a=x-nv-general.featureFlags:135\r\n")
+	// ML_FF_FEC_STATUS (0x01) | ML_FF_SESSION_ID_V1 (0x02) = 3
+	sdp.WriteString("a=x-ml-general.featureFlags:3\r\n")
+	// QOS traffic types
+	sdp.WriteString("a=x-nv-vqos[0].qosTrafficType:5\r\n")
+	sdp.WriteString("a=x-nv-aqos.qosTrafficType:4\r\n")
+	// Configured bitrate (0 = use maximumBitrateKbps)
+	sdp.WriteString("a=x-ml-video.configuredBitrateKbps:0\r\n")
 
 	return sdp.String()
 }
