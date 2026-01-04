@@ -1183,50 +1183,22 @@ func (s *Stream) rtspPlay() error {
 // openMediaSockets opens UDP sockets for video and audio
 // Must be called BEFORE RTSP SETUP to get local ports for Transport header
 func (s *Stream) openMediaSockets() error {
-	// Determine if we should use IPv6 or IPv4
-	// Sunshine uses dual-stack sockets (IPv6 that can accept IPv4)
-	// Using IPv6 avoids address family mismatch issues with WSASendMsg
-	host := s.client.host
-	useIPv6 := false
-
-	// For localhost, prefer IPv6 to avoid dual-stack address conversion issues
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		useIPv6 = true
-	}
-
-	var networkType string
-	var bindIP net.IP
-	if useIPv6 {
-		networkType = "udp6"
-		bindIP = net.IPv6zero
-		log.Printf("Opening media sockets using %s (IPv6 for better dual-stack compatibility)", networkType)
-	} else {
-		networkType = "udp4"
-		bindIP = net.IPv4zero
-		log.Printf("Opening media sockets using %s", networkType)
-	}
+	// Use IPv4 - Sunshine listens on IPv4 only by default
+	networkType := "udp4"
+	log.Printf("Opening media sockets using %s", networkType)
 
 	// Open UDP socket for video
-	videoAddr := &net.UDPAddr{IP: bindIP, Port: 0}
+	videoAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 	videoConn, err := net.ListenUDP(networkType, videoAddr)
 	if err != nil {
-		// Fallback to IPv4 if IPv6 fails
-		if useIPv6 {
-			log.Printf("IPv6 socket failed, falling back to IPv4: %v", err)
-			networkType = "udp4"
-			videoAddr = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
-			videoConn, err = net.ListenUDP(networkType, videoAddr)
-		}
-		if err != nil {
-			return fmt.Errorf("failed to open video socket: %w", err)
-		}
+		return fmt.Errorf("failed to open video socket: %w", err)
 	}
 	s.videoConn = videoConn
 	s.localVideoPort = videoConn.LocalAddr().(*net.UDPAddr).Port
 	log.Printf("Video UDP socket bound to %s (port %d)", videoConn.LocalAddr(), s.localVideoPort)
 
-	// Open UDP socket for audio (same network type as video)
-	audioAddr := &net.UDPAddr{IP: bindIP, Port: 0}
+	// Open UDP socket for audio
+	audioAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 	audioConn, err := net.ListenUDP(networkType, audioAddr)
 	if err != nil {
 		videoConn.Close()
@@ -1242,11 +1214,10 @@ func (s *Stream) openMediaSockets() error {
 // startPingThreads starts continuous ping threads for video and audio
 // Must be called AFTER RTSP SETUP (when we have the ping payload)
 func (s *Stream) startPingThreads() {
-	// For localhost, use IPv6 (::1) to match the IPv6 sockets we created
-	// This avoids dual-stack address family mismatch issues
+	// For localhost, use 127.0.0.1 (IPv4) - Sunshine listens on IPv4 by default
 	host := s.client.host
-	if host == "localhost" || host == "127.0.0.1" {
-		host = "::1"
+	if host == "localhost" {
+		host = "127.0.0.1"
 	}
 
 	// Resolve the server address
@@ -1314,6 +1285,8 @@ func (s *Stream) startPingThreads() {
 
 			if seqNum == 1 {
 				log.Printf("Sent first video ping (20 bytes) to %s", serverVideoAddr)
+				log.Printf("  Ping payload (hex): %X", pingPacket)
+				log.Printf("  Ping payload (ASCII): %s", string(pingPacket[:16]))
 			}
 
 			time.Sleep(500 * time.Millisecond)
