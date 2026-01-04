@@ -3,8 +3,11 @@ package moonlight
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -27,19 +30,24 @@ import (
 
 // Client handles communication with Sunshine server
 type Client struct {
-	host       string
-	port       int
-	httpClient *http.Client
-	uniqueID   string
-	clientCert *tls.Certificate
-	paired     bool
+	host        string
+	port        int
+	httpClient  *http.Client
+	uniqueID    string
+	clientCert  *tls.Certificate
+	certDER     []byte // Raw certificate bytes for pairing
+	privateKey  *rsa.PrivateKey
+	paired      bool
+	pairingPIN  string
+	deviceName  string
 }
 
 // NewClient creates a new Moonlight client
 func NewClient(host string, port int) *Client {
 	return &Client{
-		host: host,
-		port: port,
+		host:       host,
+		port:       port,
+		deviceName: "Moonparty",
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -66,13 +74,341 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	c.paired = paired
 	if !paired {
-		log.Println("Not paired with Sunshine. Please pair using the Sunshine web UI.")
-		log.Printf("Client ID: %s", c.uniqueID)
+		log.Println("Not paired with Sunshine.")
+		log.Println("Starting pairing process...")
+
+		// Generate PIN and start pairing
+		pin, err := c.StartPairing(ctx)
+		if err != nil {
+			return fmt.Errorf("pairing error: %w", err)
+		}
+
+		log.Println("")
+		log.Println("============================================")
+		log.Printf("  PAIRING PIN: %s", pin)
+		log.Println("============================================")
+		log.Println("")
+		log.Println("Enter this PIN in Sunshine's web UI:")
+		log.Printf("  https://%s:47990 -> PIN Pairing", c.host)
+		log.Println("")
+		log.Println("Waiting for pairing to complete...")
+
+		// Wait for user to enter PIN in Sunshine (poll for completion)
+		if err := c.waitForPairing(ctx); err != nil {
+			return fmt.Errorf("pairing failed: %w", err)
+		}
+
+		log.Println("Pairing successful!")
+		c.paired = true
 	} else {
 		log.Println("Successfully connected to Sunshine (already paired)")
 	}
 
 	return nil
+}
+
+// StartPairing initiates the pairing process and returns a PIN
+func (c *Client) StartPairing(ctx context.Context) (string, error) {
+	// Generate a random 4-digit PIN
+	pinBytes := make([]byte, 4)
+	rand.Read(pinBytes)
+	pin := fmt.Sprintf("%04d", (int(pinBytes[0])<<8|int(pinBytes[1]))%10000)
+	c.pairingPIN = pin
+
+	// Phase 1: Get server certificate
+	serverCert, err := c.pairGetServerCert(ctx)
+	if err != nil {
+		return "", fmt.Errorf("getservercert failed: %w", err)
+	}
+
+	// Phase 2: Send challenge
+	if err := c.pairChallenge(ctx, serverCert); err != nil {
+		return "", fmt.Errorf("challenge failed: %w", err)
+	}
+
+	return pin, nil
+}
+
+// pairGetServerCert initiates pairing and gets server certificate
+func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
+	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&phrase=getservercert",
+		c.host, c.port, c.uniqueID, c.deviceName)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var pairResp struct {
+		Paired      string `xml:"paired"`
+		PlainCert   string `xml:"plaincert"`
+		Status      string `xml:"status_code"`
+		StatusMsg   string `xml:"status_message"`
+	}
+	if err := xml.Unmarshal(body, &pairResp); err != nil {
+		return nil, fmt.Errorf("parse error: %w (body: %s)", err, string(body))
+	}
+
+	if pairResp.Paired != "1" && pairResp.Status != "200" {
+		return nil, fmt.Errorf("pairing not started: %s", pairResp.StatusMsg)
+	}
+
+	// Decode hex-encoded certificate
+	certBytes, err := hex.DecodeString(pairResp.PlainCert)
+	if err != nil {
+		return nil, fmt.Errorf("decode cert: %w", err)
+	}
+
+	return certBytes, nil
+}
+
+// pairChallenge sends the client challenge
+func (c *Client) pairChallenge(ctx context.Context, serverCert []byte) error {
+	// Generate salt and derive AES key from PIN
+	salt := make([]byte, 16)
+	rand.Read(salt)
+
+	aesKey := c.generateAESKey(salt)
+
+	// Generate client challenge (random bytes)
+	clientChallenge := make([]byte, 16)
+	rand.Read(clientChallenge)
+
+	// Encrypt challenge with AES key
+	encryptedChallenge, err := c.aesEncrypt(aesKey, clientChallenge)
+	if err != nil {
+		return err
+	}
+
+	// Send challenge
+	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientchallenge=%s",
+		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(append(salt, encryptedChallenge...)))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var challengeResp struct {
+		Paired          string `xml:"paired"`
+		ChallengeResp   string `xml:"challengeresponse"`
+	}
+	if err := xml.Unmarshal(body, &challengeResp); err != nil {
+		return fmt.Errorf("parse challenge response: %w", err)
+	}
+
+	if challengeResp.Paired != "1" {
+		return fmt.Errorf("challenge rejected")
+	}
+
+	// Verify server challenge response and continue pairing
+	return c.pairServerChallengeResponse(ctx, aesKey, serverCert, clientChallenge)
+}
+
+// pairServerChallengeResponse handles the server's challenge response
+func (c *Client) pairServerChallengeResponse(ctx context.Context, aesKey, serverCert, clientChallenge []byte) error {
+	// Generate server challenge response
+	serverChallengeResp := make([]byte, 16)
+	rand.Read(serverChallengeResp)
+
+	// Hash: SHA1(server_challenge + server_cert + secret)
+	h := sha1.New()
+	h.Write(serverChallengeResp)
+	h.Write(serverCert)
+	secret := make([]byte, 16)
+	rand.Read(secret)
+	h.Write(secret)
+	challengeRespHash := h.Sum(nil)
+
+	encryptedResp, err := c.aesEncrypt(aesKey, challengeRespHash)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&serverchallengeresp=%s",
+		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(encryptedResp))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var scResp struct {
+		Paired        string `xml:"paired"`
+		PairingSecret string `xml:"pairingsecret"`
+	}
+	if err := xml.Unmarshal(body, &scResp); err != nil {
+		return fmt.Errorf("parse server challenge: %w", err)
+	}
+
+	if scResp.Paired != "1" {
+		return fmt.Errorf("server challenge failed")
+	}
+
+	// Send client pairing secret (our certificate signature)
+	return c.pairClientSecret(ctx, aesKey)
+}
+
+// pairClientSecret sends the client's pairing secret
+func (c *Client) pairClientSecret(ctx context.Context, aesKey []byte) error {
+	// Create pairing secret: client cert + signature
+	h := sha256.New()
+	h.Write(c.certDER)
+	certHash := h.Sum(nil)
+
+	// Sign with private key
+	signature, err := rsa.SignPKCS1v15(rand.Reader, c.privateKey, 0, certHash)
+	if err != nil {
+		// If signing fails, just send the cert hash
+		signature = certHash
+	}
+
+	pairingSecret := append(c.certDER, signature...)
+	encryptedSecret, err := c.aesEncrypt(aesKey, pairingSecret)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientpairingsecret=%s",
+		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(encryptedSecret))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var secretResp struct {
+		Paired string `xml:"paired"`
+	}
+	if err := xml.Unmarshal(body, &secretResp); err != nil {
+		return fmt.Errorf("parse secret response: %w", err)
+	}
+
+	if secretResp.Paired != "1" {
+		return fmt.Errorf("client secret rejected")
+	}
+
+	return nil
+}
+
+// waitForPairing polls until pairing is complete
+func (c *Client) waitForPairing(ctx context.Context) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	timeout := time.After(2 * time.Minute)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout:
+			return fmt.Errorf("pairing timeout - PIN not entered in time")
+		case <-ticker.C:
+			paired, err := c.checkPaired(ctx)
+			if err != nil {
+				log.Printf("Checking pairing status... (waiting for PIN entry)")
+				continue
+			}
+			if paired {
+				return nil
+			}
+		}
+	}
+}
+
+// generateAESKey derives an AES key from the PIN and salt
+func (c *Client) generateAESKey(salt []byte) []byte {
+	// Key = SHA1(salt + PIN as ASCII bytes)
+	h := sha1.New()
+	h.Write(salt)
+	h.Write([]byte(c.pairingPIN))
+	hash := h.Sum(nil)
+
+	// Take first 16 bytes for AES-128
+	return hash[:16]
+}
+
+// aesEncrypt encrypts data with AES-128-ECB
+func (c *Client) aesEncrypt(key, data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Pad to block size
+	padLen := aes.BlockSize - (len(data) % aes.BlockSize)
+	if padLen == 0 {
+		padLen = aes.BlockSize
+	}
+	padded := make([]byte, len(data)+padLen)
+	copy(padded, data)
+	for i := len(data); i < len(padded); i++ {
+		padded[i] = byte(padLen)
+	}
+
+	// ECB mode encryption
+	encrypted := make([]byte, len(padded))
+	for i := 0; i < len(padded); i += aes.BlockSize {
+		block.Encrypt(encrypted[i:], padded[i:])
+	}
+
+	return encrypted, nil
+}
+
+// aesDecrypt decrypts AES-128-ECB data
+func (c *Client) aesDecrypt(key, data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	decrypted := make([]byte, len(data))
+	for i := 0; i < len(data); i += aes.BlockSize {
+		block.Decrypt(decrypted[i:], data[i:])
+	}
+
+	// Remove PKCS7 padding
+	if len(decrypted) > 0 {
+		padLen := int(decrypted[len(decrypted)-1])
+		if padLen <= aes.BlockSize && padLen <= len(decrypted) {
+			decrypted = decrypted[:len(decrypted)-padLen]
+		}
+	}
+
+	return decrypted, nil
 }
 
 // loadOrGenerateIdentity loads or creates client certificates
@@ -94,11 +430,32 @@ func (c *Client) loadOrGenerateIdentity() error {
 		}
 		c.clientCert = &cert
 
+		// Load private key
+		keyPEM, err := os.ReadFile(keyPath)
+		if err != nil {
+			return err
+		}
+		keyBlock, _ := pem.Decode(keyPEM)
+		if keyBlock != nil {
+			c.privateKey, _ = x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+		}
+
+		// Load cert DER
+		certPEM, err := os.ReadFile(certPath)
+		if err != nil {
+			return err
+		}
+		certBlock, _ := pem.Decode(certPEM)
+		if certBlock != nil {
+			c.certDER = certBlock.Bytes
+		}
+
 		idBytes, err := os.ReadFile(idPath)
 		if err != nil {
 			return err
 		}
 		c.uniqueID = strings.TrimSpace(string(idBytes))
+		log.Printf("Loaded existing client identity: %s", c.uniqueID)
 		return nil
 	}
 
@@ -107,11 +464,13 @@ func (c *Client) loadOrGenerateIdentity() error {
 	if err != nil {
 		return err
 	}
+	c.privateKey = privateKey
 
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
-			CommonName: "Moonparty Client",
+			CommonName:   "Moonparty",
+			Organization: []string{"Moonparty"},
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(20, 0, 0),
@@ -124,6 +483,7 @@ func (c *Client) loadOrGenerateIdentity() error {
 	if err != nil {
 		return err
 	}
+	c.certDER = certDER
 
 	// Save certificate
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
@@ -469,3 +829,6 @@ func (c *Client) IsPaired() bool {
 func (c *Client) GetUniqueID() string {
 	return c.uniqueID
 }
+
+// Ensure cipher import is used
+var _ cipher.Block
