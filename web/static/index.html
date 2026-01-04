@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Moonparty - Multiplayer Game Streaming</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Video Container -->
+        <div id="video-container">
+            <video id="video" autoplay playsinline muted></video>
+            <canvas id="canvas"></canvas>
+            <div id="loading">
+                <div class="spinner"></div>
+                <p>Connecting to stream...</p>
+            </div>
+            <div id="stats" class="hidden">
+                <span id="stat-fps">-- FPS</span>
+                <span id="stat-bitrate">-- Mbps</span>
+                <span id="stat-latency">-- ms</span>
+            </div>
+        </div>
+
+        <!-- Control Panel (Collapsible) -->
+        <div id="panel" class="collapsed">
+            <button id="panel-toggle" aria-label="Toggle panel">
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                    <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+                </svg>
+            </button>
+
+            <div id="panel-content">
+                <!-- Session Info -->
+                <section id="session-section">
+                    <h3>Session</h3>
+                    <div id="session-status">
+                        <span class="status-dot offline"></span>
+                        <span id="status-text">Disconnected</span>
+                    </div>
+                    <div id="session-info" class="hidden">
+                        <p>Session: <code id="session-id">--</code></p>
+                        <p>Role: <span id="role">--</span></p>
+                        <p>Player Slot: <span id="slot">--</span></p>
+                    </div>
+                </section>
+
+                <!-- Players -->
+                <section id="players-section" class="hidden">
+                    <h3>Players</h3>
+                    <ul id="player-list"></ul>
+                    <button id="join-game-btn" class="hidden">Join Game</button>
+                </section>
+
+                <!-- Host Controls -->
+                <section id="host-controls" class="hidden">
+                    <h3>Host Controls</h3>
+                    <div class="control-group">
+                        <label>
+                            <input type="checkbox" id="guest-keyboard-toggle">
+                            Allow guest keyboard/mouse
+                        </label>
+                    </div>
+                    <div id="player-keyboard-toggles"></div>
+                </section>
+
+                <!-- Stream Quality -->
+                <section id="quality-section">
+                    <h3>Quality</h3>
+                    <div class="control-group">
+                        <label for="resolution">Resolution</label>
+                        <select id="resolution">
+                            <option value="1920x1080">1080p</option>
+                            <option value="1280x720">720p</option>
+                            <option value="854x480">480p</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="fps">FPS</label>
+                        <select id="fps">
+                            <option value="60">60 FPS</option>
+                            <option value="30">30 FPS</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="bitrate">Bitrate: <span id="bitrate-value">20</span> Mbps</label>
+                        <input type="range" id="bitrate" min="5" max="50" value="20">
+                    </div>
+                </section>
+
+                <!-- Input Settings -->
+                <section id="input-section">
+                    <h3>Input</h3>
+                    <div class="control-group">
+                        <label>
+                            <input type="checkbox" id="capture-keyboard" checked>
+                            Capture keyboard
+                        </label>
+                    </div>
+                    <div class="control-group">
+                        <label>
+                            <input type="checkbox" id="capture-mouse" checked>
+                            Capture mouse
+                        </label>
+                    </div>
+                    <div id="gamepad-status">
+                        <span id="gamepad-icon">🎮</span>
+                        <span id="gamepad-text">No gamepad detected</span>
+                    </div>
+                </section>
+
+                <!-- Actions -->
+                <section id="actions-section">
+                    <button id="fullscreen-btn">Fullscreen</button>
+                    <button id="disconnect-btn" class="danger hidden">Disconnect</button>
+                </section>
+            </div>
+        </div>
+
+        <!-- Touch Controls (for mobile) -->
+        <div id="touch-controls" class="hidden">
+            <div id="touch-dpad"></div>
+            <div id="touch-buttons">
+                <button class="touch-btn" data-btn="a">A</button>
+                <button class="touch-btn" data-btn="b">B</button>
+                <button class="touch-btn" data-btn="x">X</button>
+                <button class="touch-btn" data-btn="y">Y</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js" type="module"></script>
+</body>
+</html>

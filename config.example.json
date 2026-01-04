@@ -1,0 +1,20 @@
+{
+  "listen_addr": ":8080",
+  "sunshine_host": "localhost",
+  "sunshine_port": 47989,
+  "max_players": 4,
+  "ice_servers": [
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302"
+  ],
+  "turn_username": "",
+  "turn_credential": "",
+  "stream_settings": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "bitrate": 20000,
+    "codec": "h264",
+    "audio_channels": 2
+  }
+}

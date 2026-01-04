@@ -1,0 +1,38 @@
+# Binaries
+moonparty
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Go workspace
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Config with secrets
+config.json
+
+# Moonparty data
+*.crt
+*.key
+.moonparty/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
