@@ -939,8 +939,9 @@ func (s *Stream) rtspSendRequest(method, target, body string) (map[string]string
 		req.WriteString(fmt.Sprintf("Session: %s\r\n", s.sessionID))
 	}
 	if body != "" {
-		req.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
-		req.WriteString("Content-Type: application/sdp\r\n")
+		// Note: Sunshine expects "Content-length" (lowercase 'l'), not "Content-Length"
+		req.WriteString(fmt.Sprintf("Content-length: %d\r\n", len(body)))
+		req.WriteString("Content-type: application/sdp\r\n")
 	}
 	req.WriteString("\r\n")
 	if body != "" {
@@ -949,8 +950,14 @@ func (s *Stream) rtspSendRequest(method, target, body string) (map[string]string
 
 	s.rtspSeqNum++
 
+	// Debug: log the request being sent
+	reqStr := req.String()
+	if method == "ANNOUNCE" {
+		log.Printf("RTSP ANNOUNCE request (Content-Length should be %d):\n%s", len(body), reqStr[:min(500, len(reqStr))])
+	}
+
 	// Send request
-	if _, err := conn.Write([]byte(req.String())); err != nil {
+	if _, err := conn.Write([]byte(reqStr)); err != nil {
 		return nil, "", err
 	}
 
