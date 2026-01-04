@@ -866,17 +866,11 @@ func (s *Stream) launchApp(ctx context.Context, appID, width, height, fps, bitra
 }
 
 // performRTSPHandshake performs the RTSP handshake with Sunshine
+// Note: Sunshine closes the TCP connection after each RTSP message,
+// so we need to open a new connection for each request.
 func (s *Stream) performRTSPHandshake(ctx context.Context) error {
-	// Connect to RTSP port
-	addr := fmt.Sprintf("%s:%d", s.client.host, s.rtspPort)
-	log.Printf("Connecting to RTSP server at %s", addr)
-
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-	if err != nil {
-		return fmt.Errorf("failed to connect to RTSP: %w", err)
-	}
-	s.rtspConn = conn
 	s.rtspSeqNum = 1
+	log.Printf("Starting RTSP handshake with %s:%d", s.client.host, s.rtspPort)
 
 	// 1. OPTIONS
 	if err := s.rtspOptions(); err != nil {
@@ -918,12 +912,22 @@ func (s *Stream) performRTSPHandshake(ctx context.Context) error {
 }
 
 // rtspSendRequest sends an RTSP request and returns the response
+// Each request opens a new TCP connection because Sunshine closes after each response
 func (s *Stream) rtspSendRequest(method, target, body string) (map[string]string, string, error) {
+	// Open a new connection for this request
+	addr := fmt.Sprintf("%s:%d", s.client.host, s.rtspPort)
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to connect to RTSP: %w", err)
+	}
+	defer conn.Close()
+
 	// Build request
 	var req strings.Builder
 	req.WriteString(fmt.Sprintf("%s %s RTSP/1.0\r\n", method, target))
 	req.WriteString(fmt.Sprintf("CSeq: %d\r\n", s.rtspSeqNum))
 	req.WriteString("X-GS-ClientVersion: 14\r\n")
+	req.WriteString(fmt.Sprintf("Host: %s\r\n", s.client.host))
 	if s.sessionID != "" {
 		req.WriteString(fmt.Sprintf("Session: %s\r\n", s.sessionID))
 	}
@@ -939,14 +943,14 @@ func (s *Stream) rtspSendRequest(method, target, body string) (map[string]string
 	s.rtspSeqNum++
 
 	// Send request
-	if _, err := s.rtspConn.Write([]byte(req.String())); err != nil {
+	if _, err := conn.Write([]byte(req.String())); err != nil {
 		return nil, "", err
 	}
 
 	// Read response
-	s.rtspConn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	buf := make([]byte, 4096)
-	n, err := s.rtspConn.Read(buf)
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	buf := make([]byte, 8192)
+	n, err := conn.Read(buf)
 	if err != nil {
 		return nil, "", err
 	}
