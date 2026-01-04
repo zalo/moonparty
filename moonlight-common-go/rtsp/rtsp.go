@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -115,6 +116,11 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("SETUP audio failed: %d %s", resp.StatusCode, resp.StatusText)
 	}
+	// Debug: log all headers from SETUP response
+	log.Printf("SETUP audio response headers:")
+	for k, v := range resp.Headers {
+		log.Printf("  %s: %s", k, v)
+	}
 	// Parse session ID (format: "DEADBEEFCAFE;timeout = 90")
 	if session := resp.Headers["Session"]; session != "" && c.sessionID == "" {
 		parts := strings.Split(session, ";")
@@ -123,6 +129,7 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	// Parse X-SS-Ping-Payload from Sunshine
 	if ping := resp.Headers["X-SS-Ping-Payload"]; ping != "" {
 		ports.PingPayload = ping
+		log.Printf("Found ping payload in audio SETUP: %s", ping)
 	}
 	ports.AudioPort = parseTransportPort(resp.Headers["Transport"])
 
@@ -136,6 +143,16 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("SETUP video failed: %d %s", resp.StatusCode, resp.StatusText)
+	}
+	// Debug: log all headers from video SETUP response
+	log.Printf("SETUP video response headers:")
+	for k, v := range resp.Headers {
+		log.Printf("  %s: %s", k, v)
+	}
+	// Parse X-SS-Ping-Payload from Sunshine (may be in any SETUP response)
+	if ping := resp.Headers["X-SS-Ping-Payload"]; ping != "" && ports.PingPayload == "" {
+		ports.PingPayload = ping
+		log.Printf("Found ping payload in video SETUP: %s", ping)
 	}
 	ports.VideoPort = parseTransportPort(resp.Headers["Transport"])
 
@@ -151,6 +168,9 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 		return nil, fmt.Errorf("SETUP control failed: %d %s", resp.StatusCode, resp.StatusText)
 	}
 	ports.ControlPort = parseTransportPort(resp.Headers["Transport"])
+
+	log.Printf("RTSP SETUP complete: VideoPort=%d AudioPort=%d ControlPort=%d PingPayload=%q (len=%d)",
+		ports.VideoPort, ports.AudioPort, ports.ControlPort, ports.PingPayload, len(ports.PingPayload))
 
 	return ports, nil
 }

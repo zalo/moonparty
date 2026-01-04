@@ -122,6 +122,9 @@ func NewStream(config types.StreamConfiguration, callbacks types.DecoderCallback
 	// Copy ping payload (X-SS-Ping-Payload is a 16-char hex string sent as ASCII)
 	if len(pingPayload) == 16 {
 		copy(s.pingPayload[:], []byte(pingPayload))
+		log.Printf("Video stream using ping payload: %s (len=%d)", pingPayload, len(pingPayload))
+	} else {
+		log.Printf("Warning: Video stream ping payload empty or invalid length: %d", len(pingPayload))
 	}
 	return s
 }
@@ -279,6 +282,9 @@ func (s *Stream) pingLoop() {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
+	// Log first ping
+	firstPing := true
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -290,7 +296,12 @@ func (s *Stream) pingLoop() {
 			pingPacket[17] = byte(s.pingSeqNum >> 16)
 			pingPacket[18] = byte(s.pingSeqNum >> 8)
 			pingPacket[19] = byte(s.pingSeqNum)
-			s.conn.WriteToUDP(pingPacket, s.remoteAddr)
+			n, err := s.conn.WriteToUDP(pingPacket, s.remoteAddr)
+			if firstPing {
+				log.Printf("Video ping sent to %s: %d bytes, payload=%x, seq=%d, err=%v",
+					s.remoteAddr, n, pingPacket[:16], s.pingSeqNum, err)
+				firstPing = false
+			}
 		}
 	}
 }
