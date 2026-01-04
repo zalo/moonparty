@@ -14,7 +14,7 @@ func main() {
 	// Parse command line flags
 	configPath := flag.String("config", "config.json", "Path to configuration file")
 	sunshineHost := flag.String("host", "localhost", "Sunshine host address")
-	sunshinePort := flag.Int("port", 47989, "Sunshine HTTP port")
+	sunshinePort := flag.Int("port", 47990, "Sunshine HTTP port")
 	listenAddr := flag.String("listen", ":8080", "Web server listen address")
 	flag.Parse()
 

@@ -1,7 +1,7 @@
 {
   "listen_addr": ":8080",
   "sunshine_host": "localhost",
-  "sunshine_port": 47989,
+  "sunshine_port": 47990,
   "max_players": 4,
   "ice_servers": [
     "stun:stun.l.google.com:19302",

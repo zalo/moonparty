@@ -54,11 +54,13 @@ Multiplayer web streaming for Sunshine game streaming server. Fan out your deskt
 git clone https://github.com/zalo/moonparty.git
 cd moonparty
 
-# Build
+# Build and run on Linux (connects to local Sunshine)
 go build -o moonparty ./cmd/moonparty
-
-# Run (connects to local Sunshine)
 ./moonparty --host localhost --listen :8080
+
+# Build and run on Windows
+go build -o moonparty.exe ./cmd/moonparty
+./moonparty.exe --host localhost --listen :8080
 ```
 
 ### Usage
@@ -87,7 +89,7 @@ Options:
   -host string
         Sunshine host address (default "localhost")
   -port int
-        Sunshine HTTP port (default 47989)
+        Sunshine HTTP port (default 47990)
   -listen string
         Web server listen address (default ":8080")
   -config string
@@ -102,7 +104,7 @@ Create `config.json` for advanced configuration:
 {
   "listen_addr": ":8080",
   "sunshine_host": "192.168.1.100",
-  "sunshine_port": 47989,
+  "sunshine_port": 47990,
   "max_players": 4,
   "ice_servers": [
     "stun:stun.l.google.com:19302"
