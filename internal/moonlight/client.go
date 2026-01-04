@@ -8,7 +8,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -508,8 +507,9 @@ func (c *Client) waitForPairing(ctx context.Context) error {
 
 // generateAESKey derives an AES key from the PIN and salt
 func (c *Client) generateAESKey(salt []byte) []byte {
-	// Key = SHA1(salt + PIN as ASCII bytes)
-	h := sha1.New()
+	// Key = SHA256(salt + PIN as ASCII bytes)[:16]
+	// Note: Sunshine (server version 7+) uses SHA256, older servers use SHA1
+	h := sha256.New()
 	h.Write(salt)
 	h.Write([]byte(c.pairingPIN))
 	hash := h.Sum(nil)
