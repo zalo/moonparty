@@ -79,7 +79,8 @@ func (c *Client) Close() {
 // DoAnnounce performs the RTSP ANNOUNCE request
 func (c *Client) DoAnnounce(sdp string) (*Response, error) {
 	headers := map[string]string{
-		"Content-Type": "application/sdp",
+		// Note: Sunshine expects lowercase 't' in Content-type
+		"Content-type": "application/sdp",
 	}
 	return c.doRequest("ANNOUNCE", "streamid=control", headers, sdp)
 }
@@ -162,7 +163,8 @@ func (c *Client) doRequest(method, uri string, headers map[string]string, body s
 	}
 
 	if body != "" {
-		req.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
+		// Note: Sunshine expects "Content-length" (lowercase 'l'), not "Content-Length"
+		req.WriteString(fmt.Sprintf("Content-length: %d\r\n", len(body)))
 	}
 
 	req.WriteString("\r\n")
