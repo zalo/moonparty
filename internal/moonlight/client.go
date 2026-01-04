@@ -1221,7 +1221,9 @@ func (s *Stream) AudioSamples() <-chan []byte {
 
 // SendInput sends input to Sunshine
 func (s *Stream) SendInput(input InputPacket) {
-	if s.conn == nil {
+	// TODO: Input should be sent over the control channel (ENet/reliable UDP)
+	// For now, this is a placeholder until control channel is implemented
+	if s.controlConn == nil {
 		return
 	}
 
@@ -1238,7 +1240,7 @@ func (s *Stream) SendInput(input InputPacket) {
 	}
 
 	if len(packet) > 0 {
-		s.conn.Write(packet)
+		s.controlConn.Write(packet)
 	}
 }
 
