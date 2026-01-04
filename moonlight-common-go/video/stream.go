@@ -272,13 +272,23 @@ func (s *Stream) receiveLoop() {
 	}
 }
 
-// pingLoop sends periodic UDP pings in Sunshine format
-// SS_PING format: 16-byte payload + 4-byte sequence number (big-endian)
+// pingLoop sends periodic UDP pings
+// If ping payload is set (Sunshine), sends SS_PING format: 16-byte payload + 4-byte sequence number (big-endian)
+// Otherwise sends legacy "PING" packet (NVIDIA GFE)
 func (s *Stream) pingLoop() {
 	defer s.wg.Done()
 
-	pingPacket := make([]byte, 20)
-	copy(pingPacket[:16], s.pingPayload[:])
+	// Check if we have a valid ping payload (Sunshine mode)
+	useSunshinePing := s.pingPayload[0] != 0
+
+	var pingPacket []byte
+	if useSunshinePing {
+		pingPacket = make([]byte, 20)
+		copy(pingPacket[:16], s.pingPayload[:])
+	} else {
+		// Legacy PING format for NVIDIA GFE
+		pingPacket = []byte{0x50, 0x49, 0x4E, 0x47} // "PING"
+	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -291,16 +301,23 @@ func (s *Stream) pingLoop() {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			s.pingSeqNum++
-			// Sequence number in big-endian
-			pingPacket[16] = byte(s.pingSeqNum >> 24)
-			pingPacket[17] = byte(s.pingSeqNum >> 16)
-			pingPacket[18] = byte(s.pingSeqNum >> 8)
-			pingPacket[19] = byte(s.pingSeqNum)
+			if useSunshinePing {
+				s.pingSeqNum++
+				// Sequence number in big-endian
+				pingPacket[16] = byte(s.pingSeqNum >> 24)
+				pingPacket[17] = byte(s.pingSeqNum >> 16)
+				pingPacket[18] = byte(s.pingSeqNum >> 8)
+				pingPacket[19] = byte(s.pingSeqNum)
+			}
 			n, err := s.conn.WriteToUDP(pingPacket, s.remoteAddr)
 			if firstPing {
-				log.Printf("Video ping sent to %s: %d bytes, payload=%x, seq=%d, err=%v",
-					s.remoteAddr, n, pingPacket[:16], s.pingSeqNum, err)
+				if useSunshinePing {
+					log.Printf("Video ping (Sunshine) sent to %s: %d bytes, payload=%x, seq=%d, err=%v",
+						s.remoteAddr, n, pingPacket[:16], s.pingSeqNum, err)
+				} else {
+					log.Printf("Video ping (legacy) sent to %s: %d bytes, err=%v",
+						s.remoteAddr, n, err)
+				}
 				firstPing = false
 			}
 		}

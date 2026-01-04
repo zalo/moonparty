@@ -208,11 +208,11 @@ const (
 	CapabilityPullRenderer = 0x02
 )
 
-// Encryption features
+// Encryption features (must match Sunshine SS_ENC_* values)
 const (
-	EncVideo     = 0x0001
-	EncAudio     = 0x0002
-	EncControlV2 = 0x0004
+	EncControlV2 = 0x01 // SS_ENC_CONTROL_V2
+	EncVideo     = 0x02 // SS_ENC_VIDEO
+	EncAudio     = 0x04 // SS_ENC_AUDIO
 )
 
 // Feature flags (Sunshine extensions)

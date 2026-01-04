@@ -106,8 +106,10 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 
 	// Setup audio stream first (like working client)
 	// Path format: streamid=audio/0/0
+	// Use different client ports than server ports to avoid conflicts on localhost
+	// Server uses 48000, client uses 48200
 	headers := map[string]string{
-		"Transport": "unicast;client_port=48000",
+		"Transport": "unicast;client_port=48200",
 	}
 	resp, err := c.doRequest("SETUP", "streamid=audio/0/0", headers, "")
 	if err != nil {
@@ -126,16 +128,20 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 		parts := strings.Split(session, ";")
 		c.sessionID = strings.TrimSpace(parts[0])
 	}
-	// Parse X-SS-Ping-Payload from Sunshine
-	if ping := resp.Headers["X-SS-Ping-Payload"]; ping != "" {
-		ports.PingPayload = ping
-		log.Printf("Found ping payload in audio SETUP: %s", ping)
+	// Parse X-SS-Ping-Payload from Sunshine (case-insensitive search)
+	for k, v := range resp.Headers {
+		if strings.EqualFold(k, "X-SS-Ping-Payload") && v != "" {
+			ports.PingPayload = v
+			log.Printf("Found ping payload in audio SETUP: %s (header name: %s)", v, k)
+			break
+		}
 	}
 	ports.AudioPort = parseTransportPort(resp.Headers["Transport"])
 
 	// Setup video stream
+	// Server uses 47998, client uses 47800
 	headers = map[string]string{
-		"Transport": "unicast;client_port=47998",
+		"Transport": "unicast;client_port=47800",
 	}
 	resp, err = c.doRequest("SETUP", "streamid=video/0/0", headers, "")
 	if err != nil {
@@ -149,16 +155,22 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	for k, v := range resp.Headers {
 		log.Printf("  %s: %s", k, v)
 	}
-	// Parse X-SS-Ping-Payload from Sunshine (may be in any SETUP response)
-	if ping := resp.Headers["X-SS-Ping-Payload"]; ping != "" && ports.PingPayload == "" {
-		ports.PingPayload = ping
-		log.Printf("Found ping payload in video SETUP: %s", ping)
+	// Parse X-SS-Ping-Payload from Sunshine (case-insensitive, may be in any SETUP response)
+	if ports.PingPayload == "" {
+		for k, v := range resp.Headers {
+			if strings.EqualFold(k, "X-SS-Ping-Payload") && v != "" {
+				ports.PingPayload = v
+				log.Printf("Found ping payload in video SETUP: %s (header name: %s)", v, k)
+				break
+			}
+		}
 	}
 	ports.VideoPort = parseTransportPort(resp.Headers["Transport"])
 
 	// Setup control stream (path includes /13/0)
+	// Server uses 47999, client uses 47801
 	headers = map[string]string{
-		"Transport": "unicast;client_port=47999",
+		"Transport": "unicast;client_port=47801",
 	}
 	resp, err = c.doRequest("SETUP", "streamid=control/13/0", headers, "")
 	if err != nil {
