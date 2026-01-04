@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonparty/moonlight-common-go/crypto"
-	"github.com/moonparty/moonlight-common-go/fec"
-	"github.com/moonparty/moonlight-common-go/limelight"
-	"github.com/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/crypto"
+	"github.com/zalo/moonparty/moonlight-common-go/fec"
+	"github.com/zalo/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/types"
 )
 
 const (
@@ -30,8 +30,8 @@ type Stream struct {
 	mu sync.Mutex
 
 	// Configuration
-	config    limelight.StreamConfiguration
-	callbacks limelight.DecoderCallbacks
+	config    types.StreamConfiguration
+	callbacks types.DecoderCallbacks
 
 	// Networking
 	conn       *net.UDPConn
@@ -60,7 +60,7 @@ type Stream struct {
 	firstDataTime     time.Time
 
 	// Stats
-	stats limelight.RTPVideoStats
+	stats types.RTPVideoStats
 }
 
 // RTPQueue manages the RTP packet reordering queue
@@ -71,7 +71,7 @@ type RTPQueue struct {
 	packets            map[uint16]*RTPPacket
 	lastSeq            uint16
 
-	stats limelight.RTPVideoStats
+	stats types.RTPVideoStats
 }
 
 // RTPPacket represents a received RTP packet
@@ -88,7 +88,7 @@ type Depacketizer struct {
 	mu sync.Mutex
 
 	currentFrame     *FrameAssembly
-	frameQueue       chan *limelight.DecodeUnit
+	frameQueue       chan *types.DecodeUnit
 	packetSize       int
 
 	nextFrameNumber  uint32
@@ -98,7 +98,7 @@ type Depacketizer struct {
 // FrameAssembly tracks the assembly of a video frame
 type FrameAssembly struct {
 	FrameNumber     uint32
-	FrameType       limelight.FrameType
+	FrameType       types.FrameType
 	TotalPackets    int
 	ReceivedPackets int
 	Packets         []*RTPPacket
@@ -107,11 +107,11 @@ type FrameAssembly struct {
 }
 
 // NewStream creates a new video stream handler
-func NewStream(config limelight.StreamConfiguration, callbacks limelight.DecoderCallbacks) *Stream {
+func NewStream(config types.StreamConfiguration, callbacks types.DecoderCallbacks) *Stream {
 	return &Stream{
 		config:    config,
 		callbacks: callbacks,
-		encrypted: (config.EncryptionFlags & limelight.EncVideo) != 0,
+		encrypted: (config.EncryptionFlags & types.EncVideo) != 0,
 		aesKey:    config.RemoteInputAesKey,
 	}
 }
@@ -145,7 +145,7 @@ func (s *Stream) Start(ctx context.Context, remoteAddr, localAddr *net.UDPAddr, 
 
 	s.depacketizer = &Depacketizer{
 		packetSize:    s.config.PacketSize,
-		frameQueue:    make(chan *limelight.DecodeUnit, 16),
+		frameQueue:    make(chan *types.DecodeUnit, 16),
 		waitingForIDR: true,
 	}
 
@@ -162,7 +162,7 @@ func (s *Stream) Start(ctx context.Context, remoteAddr, localAddr *net.UDPAddr, 
 	go s.pingLoop()
 
 	// Start decoder thread if not direct submit
-	if s.callbacks.Capabilities()&(limelight.CapabilityDirectSubmit|limelight.CapabilityPullRenderer) == 0 {
+	if s.callbacks.Capabilities()&(types.CapabilityDirectSubmit|types.CapabilityPullRenderer) == 0 {
 		s.wg.Add(1)
 		go s.decoderLoop()
 	}
@@ -188,7 +188,7 @@ func (s *Stream) Stop() {
 }
 
 // GetStats returns current video statistics
-func (s *Stream) GetStats() limelight.RTPVideoStats {
+func (s *Stream) GetStats() types.RTPVideoStats {
 	s.queue.mu.Lock()
 	defer s.queue.mu.Unlock()
 	return s.queue.stats
@@ -389,9 +389,9 @@ func (s *Stream) processPacket(packet *RTPPacket) {
 			s.submitFrame(s.depacketizer.currentFrame)
 		}
 
-		frameType := limelight.FrameTypePFrames
+		frameType := types.FrameTypePFrames
 		if isIDR {
-			frameType = limelight.FrameTypeIDR
+			frameType = types.FrameTypeIDR
 		}
 
 		s.depacketizer.currentFrame = &FrameAssembly{
@@ -421,7 +421,7 @@ func (s *Stream) submitFrame(frame *FrameAssembly) {
 	}
 
 	// Build decode unit
-	unit := &limelight.DecodeUnit{
+	unit := &types.DecodeUnit{
 		FrameNumber:        frame.FrameNumber,
 		FrameType:          frame.FrameType,
 		EnqueueTimeMs:      uint64(time.Since(frame.StartTime).Milliseconds()),
@@ -430,7 +430,7 @@ func (s *Stream) submitFrame(frame *FrameAssembly) {
 
 	// Collect buffer descriptors
 	for _, pkt := range frame.Packets {
-		unit.BufferList = append(unit.BufferList, limelight.BufferDescriptor{
+		unit.BufferList = append(unit.BufferList, types.BufferDescriptor{
 			Data:   pkt.Payload,
 			Offset: 0,
 			Length: len(pkt.Payload),
@@ -438,7 +438,7 @@ func (s *Stream) submitFrame(frame *FrameAssembly) {
 	}
 
 	// Direct submit or queue
-	if s.callbacks.Capabilities()&limelight.CapabilityDirectSubmit != 0 {
+	if s.callbacks.Capabilities()&types.CapabilityDirectSubmit != 0 {
 		s.callbacks.SubmitDecodeUnit(unit)
 		s.queue.mu.Lock()
 		s.queue.stats.SubmittedFrames++
@@ -456,7 +456,7 @@ func (s *Stream) submitFrame(frame *FrameAssembly) {
 }
 
 // WaitForNextFrame waits for and returns the next video frame
-func (s *Stream) WaitForNextFrame() (*limelight.DecodeUnit, bool) {
+func (s *Stream) WaitForNextFrame() (*types.DecodeUnit, bool) {
 	select {
 	case <-s.ctx.Done():
 		return nil, false

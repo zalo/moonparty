@@ -8,7 +8,7 @@ import (
 	"log"
 	"sync"
 
-	common "github.com/moonparty/moonlight-common-go/limelight"
+	common "github.com/zalo/moonparty/moonlight-common-go/limelight"
 )
 
 // Video format constants

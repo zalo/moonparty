@@ -5,7 +5,8 @@ import (
 	"encoding/binary"
 	"sync"
 
-	"github.com/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/types"
 )
 
 // MaxGamepads is the maximum number of controllers supported
@@ -275,8 +276,8 @@ func (s *Stream) SendMultiController(controllerNumber, activeGamepadMask int16, 
 		activeGamepadMask &= 0xF
 
 		// Map MISC to SPECIAL for GFE
-		if buttonFlags&protocol.ButtonMisc != 0 {
-			buttonFlags |= protocol.ButtonHome
+		if buttonFlags&types.ButtonMisc != 0 {
+			buttonFlags |= types.ButtonHome
 		}
 	} else {
 		controllerNumber %= MaxGamepads
@@ -608,11 +609,11 @@ func (s *Stream) buildTouchPacket(eventType uint8, pointerID uint32, x, y, press
 	buf[8] = eventType
 	// 3 bytes zero
 	binary.LittleEndian.PutUint32(buf[12:16], pointerID)
-	copy(buf[16:20], protocol.FloatToNetfloat(x)[:])
-	copy(buf[20:24], protocol.FloatToNetfloat(y)[:])
-	copy(buf[24:28], protocol.FloatToNetfloat(pressure)[:])
-	copy(buf[28:32], protocol.FloatToNetfloat(contactMajor)[:])
-	copy(buf[32:36], protocol.FloatToNetfloat(contactMinor)[:])
+	copy(buf[16:20], protocol.FloatToNetfloat(x))
+	copy(buf[20:24], protocol.FloatToNetfloat(y))
+	copy(buf[24:28], protocol.FloatToNetfloat(pressure))
+	copy(buf[28:32], protocol.FloatToNetfloat(contactMajor))
+	copy(buf[32:36], protocol.FloatToNetfloat(contactMinor))
 	binary.LittleEndian.PutUint16(buf[36:38], rotation)
 	return buf
 }
@@ -625,14 +626,14 @@ func (s *Stream) buildPenPacket(eventType, toolType, penButtons uint8, x, y, pre
 	buf[9] = toolType
 	buf[10] = penButtons
 	// 1 byte zero
-	copy(buf[12:16], protocol.FloatToNetfloat(x)[:])
-	copy(buf[16:20], protocol.FloatToNetfloat(y)[:])
-	copy(buf[20:24], protocol.FloatToNetfloat(pressure)[:])
+	copy(buf[12:16], protocol.FloatToNetfloat(x))
+	copy(buf[16:20], protocol.FloatToNetfloat(y))
+	copy(buf[20:24], protocol.FloatToNetfloat(pressure))
 	binary.LittleEndian.PutUint16(buf[24:26], rotation)
 	buf[26] = tilt
 	// 1 byte zero
-	copy(buf[28:32], protocol.FloatToNetfloat(contactMajor)[:])
-	copy(buf[32:36], protocol.FloatToNetfloat(contactMinor)[:])
+	copy(buf[28:32], protocol.FloatToNetfloat(contactMajor))
+	copy(buf[32:36], protocol.FloatToNetfloat(contactMinor))
 	return buf
 }
 
@@ -643,9 +644,9 @@ func (s *Stream) buildControllerMotionPacket(controllerNumber, motionType uint8,
 	buf[8] = controllerNumber
 	buf[9] = motionType
 	// 2 bytes zero
-	copy(buf[12:16], protocol.FloatToNetfloat(x)[:])
-	copy(buf[16:20], protocol.FloatToNetfloat(y)[:])
-	copy(buf[20:24], protocol.FloatToNetfloat(z)[:])
+	copy(buf[12:16], protocol.FloatToNetfloat(x))
+	copy(buf[16:20], protocol.FloatToNetfloat(y))
+	copy(buf[20:24], protocol.FloatToNetfloat(z))
 	return buf
 }
 

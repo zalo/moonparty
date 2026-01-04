@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonparty/moonlight-common-go/limelight"
-	"github.com/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/types"
 )
 
 const (
@@ -27,8 +27,8 @@ type Stream struct {
 	mu sync.Mutex
 
 	// Configuration
-	config        limelight.StreamConfiguration
-	callbacks     limelight.ConnectionCallbacks
+	config        types.StreamConfiguration
+	callbacks     types.ConnectionCallbacks
 	appVersion    [4]int
 	isSunshine    bool
 
@@ -59,18 +59,18 @@ type Stream struct {
 	intervalTotalCount int
 	intervalStartTime  time.Time
 	lastLossPercent    int
-	lastConnStatus     limelight.ConnectionStatus
+	lastConnStatus     types.ConnectionStatus
 
 	// HDR state
 	hdrEnabled    bool
-	hdrMetadata   limelight.HDRMetadata
+	hdrMetadata   types.HDRMetadata
 
 	// Packet type tables
 	packetTypes map[string]uint16
 }
 
 // NewStream creates a new control stream handler
-func NewStream(config limelight.StreamConfiguration, callbacks limelight.ConnectionCallbacks, appVersion [4]int, isSunshine bool) *Stream {
+func NewStream(config types.StreamConfiguration, callbacks types.ConnectionCallbacks, appVersion [4]int, isSunshine bool) *Stream {
 	s := &Stream{
 		config:     config,
 		callbacks:  callbacks,
@@ -202,9 +202,9 @@ func (s *Stream) UpdateFrameStats(frameIndex uint32, isGood bool) {
 }
 
 // GetRTTInfo returns estimated round-trip time information
-func (s *Stream) GetRTTInfo() (limelight.RTTInfo, bool) {
+func (s *Stream) GetRTTInfo() (types.RTTInfo, bool) {
 	// This would query ENet peer RTT in a real implementation
-	return limelight.RTTInfo{}, false
+	return types.RTTInfo{}, false
 }
 
 // IsHDREnabled returns whether HDR is currently enabled
@@ -215,11 +215,11 @@ func (s *Stream) IsHDREnabled() bool {
 }
 
 // GetHDRMetadata returns the current HDR metadata
-func (s *Stream) GetHDRMetadata() (limelight.HDRMetadata, bool) {
+func (s *Stream) GetHDRMetadata() (types.HDRMetadata, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.hdrEnabled {
-		return limelight.HDRMetadata{}, false
+		return types.HDRMetadata{}, false
 	}
 	return s.hdrMetadata, true
 }
@@ -514,12 +514,12 @@ func (s *Stream) checkConnectionStatus() {
 			lossPercent := 100 - (s.intervalGoodCount * 100 / s.intervalTotalCount)
 
 			// Check for status change
-			if s.lastConnStatus != limelight.ConnStatusPoor && lossPercent >= 30 {
-				s.lastConnStatus = limelight.ConnStatusPoor
-				s.callbacks.ConnectionStatusUpdate(limelight.ConnStatusPoor)
-			} else if lossPercent <= 5 && s.lastConnStatus != limelight.ConnStatusOkay {
-				s.lastConnStatus = limelight.ConnStatusOkay
-				s.callbacks.ConnectionStatusUpdate(limelight.ConnStatusOkay)
+			if s.lastConnStatus != types.ConnStatusPoor && lossPercent >= 30 {
+				s.lastConnStatus = types.ConnStatusPoor
+				s.callbacks.ConnectionStatusUpdate(types.ConnStatusPoor)
+			} else if lossPercent <= 5 && s.lastConnStatus != types.ConnStatusOkay {
+				s.lastConnStatus = types.ConnStatusOkay
+				s.callbacks.ConnectionStatusUpdate(types.ConnStatusOkay)
 			}
 
 			s.lastLossPercent = lossPercent

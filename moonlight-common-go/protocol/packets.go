@@ -334,10 +334,10 @@ const WheelDelta = 120
 const AESGCMTagLength = 16
 
 // FloatToNetfloat converts a float32 to little-endian bytes
-func FloatToNetfloat(f float32) [4]byte {
-	var b [4]byte
+func FloatToNetfloat(f float32) []byte {
+	b := make([]byte, 4)
 	bits := math.Float32bits(f)
-	LittleEndian.PutUint32(b[:], bits)
+	LittleEndian.PutUint32(b, bits)
 	return b
 }
 

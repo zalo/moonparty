@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonparty/moonlight-common-go/crypto"
-	"github.com/moonparty/moonlight-common-go/limelight"
-	"github.com/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/crypto"
+	"github.com/zalo/moonparty/moonlight-common-go/protocol"
+	"github.com/zalo/moonparty/moonlight-common-go/types"
 )
 
 const (
@@ -27,9 +27,9 @@ type Stream struct {
 	mu sync.Mutex
 
 	// Configuration
-	config      limelight.StreamConfiguration
-	callbacks   limelight.AudioCallbacks
-	opusConfig  *limelight.OpusConfig
+	config      types.StreamConfiguration
+	callbacks   types.AudioCallbacks
+	opusConfig  *types.OpusConfig
 	packetDuration int // In milliseconds
 
 	// Networking
@@ -57,7 +57,7 @@ type Stream struct {
 	packetQueue chan *audioPacket
 
 	// Stats
-	stats limelight.RTPAudioStats
+	stats types.RTPAudioStats
 }
 
 type audioPacket struct {
@@ -66,7 +66,7 @@ type audioPacket struct {
 }
 
 // NewStream creates a new audio stream handler
-func NewStream(config limelight.StreamConfiguration, callbacks limelight.AudioCallbacks) *Stream {
+func NewStream(config types.StreamConfiguration, callbacks types.AudioCallbacks) *Stream {
 	encrypted := config.AudioEncryptionEnabled
 
 	// Calculate RI key ID from IV
@@ -86,7 +86,7 @@ func NewStream(config limelight.StreamConfiguration, callbacks limelight.AudioCa
 }
 
 // Start begins audio stream reception
-func (s *Stream) Start(ctx context.Context, remoteAddr, localAddr *net.UDPAddr, audioPort int, opusConfig *limelight.OpusConfig, packetDuration int) error {
+func (s *Stream) Start(ctx context.Context, remoteAddr, localAddr *net.UDPAddr, audioPort int, opusConfig *types.OpusConfig, packetDuration int) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.opusConfig = opusConfig
 	s.packetDuration = packetDuration
@@ -105,7 +105,7 @@ func (s *Stream) Start(ctx context.Context, remoteAddr, localAddr *net.UDPAddr, 
 	s.conn = conn
 
 	// Initialize packet queue for non-direct submit
-	if s.callbacks.Capabilities()&limelight.CapabilityDirectSubmit == 0 {
+	if s.callbacks.Capabilities()&types.CapabilityDirectSubmit == 0 {
 		s.packetQueue = make(chan *audioPacket, 30)
 	}
 
@@ -128,7 +128,7 @@ func (s *Stream) Start(ctx context.Context, remoteAddr, localAddr *net.UDPAddr, 
 	go s.pingLoop()
 
 	// Start decoder thread if not direct submit
-	if s.callbacks.Capabilities()&limelight.CapabilityDirectSubmit == 0 {
+	if s.callbacks.Capabilities()&types.CapabilityDirectSubmit == 0 {
 		s.wg.Add(1)
 		go s.decoderLoop()
 	}
@@ -158,7 +158,7 @@ func (s *Stream) Stop() {
 }
 
 // GetStats returns current audio statistics
-func (s *Stream) GetStats() limelight.RTPAudioStats {
+func (s *Stream) GetStats() types.RTPAudioStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stats
@@ -253,7 +253,7 @@ func (s *Stream) receiveLoop() {
 		}
 
 		// Process audio
-		if s.callbacks.Capabilities()&limelight.CapabilityDirectSubmit != 0 {
+		if s.callbacks.Capabilities()&types.CapabilityDirectSubmit != 0 {
 			s.callbacks.DecodeAndPlaySample(audioData)
 		} else {
 			select {

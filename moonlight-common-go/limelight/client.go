@@ -9,12 +9,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/moonparty/moonlight-common-go/audio"
-	"github.com/moonparty/moonlight-common-go/control"
-	"github.com/moonparty/moonlight-common-go/fec"
-	"github.com/moonparty/moonlight-common-go/input"
-	"github.com/moonparty/moonlight-common-go/rtsp"
-	"github.com/moonparty/moonlight-common-go/video"
+	"github.com/zalo/moonparty/moonlight-common-go/audio"
+	"github.com/zalo/moonparty/moonlight-common-go/control"
+	"github.com/zalo/moonparty/moonlight-common-go/fec"
+	"github.com/zalo/moonparty/moonlight-common-go/input"
+	"github.com/zalo/moonparty/moonlight-common-go/rtsp"
+	"github.com/zalo/moonparty/moonlight-common-go/video"
 )
 
 // Client represents a Moonlight streaming client
