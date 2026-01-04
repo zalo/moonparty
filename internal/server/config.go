@@ -8,7 +8,8 @@ type Config struct {
 	// SunshineHost is the hostname/IP of the Sunshine server
 	SunshineHost string `json:"sunshine_host"`
 
-	// SunshinePort is the HTTP port of Sunshine (default 47990)
+	// SunshinePort is the Moonlight API port of Sunshine (default 47989)
+	// Note: 47990 is the web UI port and will be auto-corrected to 47989
 	SunshinePort int `json:"sunshine_port"`
 
 	// ConfigPath is the path to the config file
@@ -56,7 +57,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:   ":8080",
 		SunshineHost: "localhost",
-		SunshinePort: 47990,
+		SunshinePort: 47989,
 		MaxPlayers:   4,
 		ICEServers: []string{
 			"stun:stun.l.google.com:19302",

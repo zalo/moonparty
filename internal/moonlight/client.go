@@ -28,10 +28,17 @@ import (
 	"time"
 )
 
+// Sunshine ports
+const (
+	PortHTTP  = 47989 // Moonlight protocol HTTP API (pairing, serverinfo, applist)
+	PortHTTPS = 47984 // Moonlight protocol HTTPS (secure channel after pairing)
+	PortWebUI = 47990 // Sunshine web UI (not used by Moonlight protocol)
+)
+
 // Client handles communication with Sunshine server
 type Client struct {
 	host        string
-	port        int
+	port        int // HTTP API port (default 47989)
 	httpClient  *http.Client
 	uniqueID    string
 	clientCert  *tls.Certificate
@@ -44,6 +51,11 @@ type Client struct {
 
 // NewClient creates a new Moonlight client
 func NewClient(host string, port int) *Client {
+	// Use default Moonlight HTTP port if not specified or if web UI port was given
+	if port == 0 || port == PortWebUI {
+		port = PortHTTP
+	}
+
 	return &Client{
 		host:       host,
 		port:       port,
@@ -131,7 +143,7 @@ func (c *Client) StartPairing(ctx context.Context) (string, error) {
 
 // pairGetServerCert initiates pairing and gets server certificate
 func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
-	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&phrase=getservercert",
+	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&phrase=getservercert",
 		c.host, c.port, c.uniqueID, c.deviceName)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -189,7 +201,7 @@ func (c *Client) pairChallenge(ctx context.Context, serverCert []byte) error {
 	}
 
 	// Send challenge
-	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientchallenge=%s",
+	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientchallenge=%s",
 		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(append(salt, encryptedChallenge...)))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -241,7 +253,7 @@ func (c *Client) pairServerChallengeResponse(ctx context.Context, aesKey, server
 		return err
 	}
 
-	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&serverchallengeresp=%s",
+	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&serverchallengeresp=%s",
 		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(encryptedResp))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -293,7 +305,7 @@ func (c *Client) pairClientSecret(ctx context.Context, aesKey []byte) error {
 		return err
 	}
 
-	url := fmt.Sprintf("https://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientpairingsecret=%s",
+	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&clientpairingsecret=%s",
 		c.host, c.port, c.uniqueID, c.deviceName, hex.EncodeToString(encryptedSecret))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -518,7 +530,7 @@ func (c *Client) loadOrGenerateIdentity() error {
 
 // checkPaired checks if we're paired with Sunshine
 func (c *Client) checkPaired(ctx context.Context) (bool, error) {
-	url := fmt.Sprintf("https://%s:%d/serverinfo?uniqueid=%s", c.host, c.port, c.uniqueID)
+	url := fmt.Sprintf("http://%s:%d/serverinfo?uniqueid=%s", c.host, c.port, c.uniqueID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -609,7 +621,7 @@ func (s *Stream) launchApp(ctx context.Context, appID, width, height, fps, bitra
 	params := fmt.Sprintf("uniqueid=%s&appid=%d&mode=%dx%dx%d&bitrate=%d&sops=0&rikey=0&rikeyid=0",
 		s.client.uniqueID, appID, width, height, fps, bitrate)
 
-	url := fmt.Sprintf("https://%s:%d/launch?%s", s.client.host, s.client.port, params)
+	url := fmt.Sprintf("http://%s:%d/launch?%s", s.client.host, s.client.port, params)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -765,7 +777,7 @@ func (s *Stream) Close() error {
 
 	if s.conn != nil {
 		// Send quit command to Sunshine
-		quitURL := fmt.Sprintf("https://%s:%d/cancel?uniqueid=%s",
+		quitURL := fmt.Sprintf("http://%s:%d/cancel?uniqueid=%s",
 			s.client.host, s.client.port, s.client.uniqueID)
 		http.Get(quitURL)
 
@@ -780,7 +792,7 @@ func (s *Stream) Close() error {
 
 // GetApps retrieves the list of available applications from Sunshine
 func (c *Client) GetApps(ctx context.Context) ([]App, error) {
-	url := fmt.Sprintf("https://%s:%d/applist?uniqueid=%s", c.host, c.port, c.uniqueID)
+	url := fmt.Sprintf("http://%s:%d/applist?uniqueid=%s", c.host, c.port, c.uniqueID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
