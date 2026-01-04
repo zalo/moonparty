@@ -1147,16 +1147,20 @@ func (s *Stream) openMediaSockets() error {
 		log.Printf("Using Sunshine ping payload: %s", s.pingPayload)
 	}
 
-	// Send ping to establish return path for UDP
-	log.Printf("Sending ping to video %s: %s", serverVideoAddr, string(pingData))
-	if _, err := videoConn.WriteToUDP(pingData, serverVideoAddr); err != nil {
-		log.Printf("Warning: failed to send video ping: %v", err)
-	}
-
-	log.Printf("Sending ping to audio %s: %s", serverAudioAddr, string(pingData))
-	if _, err := audioConn.WriteToUDP(pingData, serverAudioAddr); err != nil {
-		log.Printf("Warning: failed to send audio ping: %v", err)
-	}
+	// Moonlight sends multiple ping attempts (10 times with 50ms delay)
+	log.Printf("Sending pings to video %s and audio %s", serverVideoAddr, serverAudioAddr)
+	go func() {
+		for i := 0; i < 10; i++ {
+			if _, err := videoConn.WriteToUDP(pingData, serverVideoAddr); err != nil {
+				log.Printf("Warning: video ping %d failed: %v", i, err)
+			}
+			if _, err := audioConn.WriteToUDP(pingData, serverAudioAddr); err != nil {
+				log.Printf("Warning: audio ping %d failed: %v", i, err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		log.Printf("Finished sending 10 ping attempts")
+	}()
 
 	return nil
 }
