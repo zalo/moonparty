@@ -4,6 +4,7 @@ package video
 import (
 	"context"
 	"encoding/binary"
+	"log"
 	"net"
 	"sync"
 	"time"
