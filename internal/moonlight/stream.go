@@ -221,6 +221,7 @@ func (s *LimelightStream) startLimelightConnection() error {
 		Address:              s.client.host,
 		RtspSessionUrl:       "", // Let moonlight-common-c use default
 		ServerCodecModeSupport: 0x0001, // H.264 support
+		AppVersion:           "7.0.0.0", // Sunshine Gen 7 protocol
 	}
 
 	streamConfig := &limelight.StreamConfig{
