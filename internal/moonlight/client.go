@@ -1083,22 +1083,39 @@ func (s *Stream) rtspPlay() error {
 
 // openMediaSockets opens UDP sockets for video and audio
 func (s *Stream) openMediaSockets() error {
-	// Resolve the server address
-	serverIP := net.ParseIP(s.client.host)
-	if serverIP == nil {
-		// Try to resolve hostname
-		addrs, err := net.LookupIP(s.client.host)
-		if err != nil || len(addrs) == 0 {
-			return fmt.Errorf("failed to resolve host %s: %v", s.client.host, err)
-		}
-		serverIP = addrs[0]
+	// For localhost, always use 127.0.0.1 (IPv4) since Sunshine binds to IPv4
+	host := s.client.host
+	if host == "localhost" {
+		host = "127.0.0.1"
 	}
 
-	// Use IPv4 explicitly to match localhost connections
+	// Resolve the server address
+	serverIP := net.ParseIP(host)
+	if serverIP == nil {
+		// Try to resolve hostname - prefer IPv4
+		addrs, err := net.LookupIP(host)
+		if err != nil || len(addrs) == 0 {
+			return fmt.Errorf("failed to resolve host %s: %v", host, err)
+		}
+		// Prefer IPv4 address
+		for _, addr := range addrs {
+			if addr.To4() != nil {
+				serverIP = addr
+				break
+			}
+		}
+		if serverIP == nil {
+			serverIP = addrs[0]
+		}
+	}
+
+	// Use IPv4 explicitly to match Sunshine (which typically uses IPv4)
 	networkType := "udp4"
 	if serverIP.To4() == nil {
 		networkType = "udp6"
 	}
+
+	log.Printf("Using %s for media sockets, server IP: %s", networkType, serverIP)
 
 	// Open UDP socket for video
 	videoAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
