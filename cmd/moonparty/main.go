@@ -17,7 +17,8 @@ func main() {
 	sunshinePort := flag.Int("port", 47989, "Sunshine Moonlight API port (not 47990 web UI)")
 	listenAddr := flag.String("listen", ":8080", "Web server listen address")
 	newIdentity := flag.Bool("new-identity", false, "Generate a new client identity (use if pairing is stuck)")
-	useLimelight := flag.Bool("limelight", false, "Use moonlight-common-c backend (better FEC/depacketization)")
+	useLimelight := flag.Bool("limelight", true, "Use moonlight-common-c backend (better FEC/depacketization)")
+	noLimelight := flag.Bool("no-limelight", false, "Use native Go streaming backend instead of moonlight-common-c")
 	flag.Parse()
 
 	// Create configuration with defaults
@@ -27,7 +28,7 @@ func main() {
 		SunshinePort:     *sunshinePort,
 		ConfigPath:       *configPath,
 		ForceNewIdentity: *newIdentity,
-		UseLimelight:     *useLimelight,
+		UseLimelight:     *useLimelight && !*noLimelight,
 		MaxPlayers:       4,
 		ICEServers: []string{
 			"stun:stun.l.google.com:19302",
