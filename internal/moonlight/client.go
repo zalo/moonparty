@@ -505,51 +505,38 @@ func (c *Client) generateAESKey(salt []byte) []byte {
 	return hash[:16]
 }
 
-// aesEncrypt encrypts data with AES-128-ECB
+// aesEncrypt encrypts data with AES-128-ECB (no padding, data must be block-aligned)
 func (c *Client) aesEncrypt(key, data []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
-	// Pad to block size
-	padLen := aes.BlockSize - (len(data) % aes.BlockSize)
-	if padLen == 0 {
-		padLen = aes.BlockSize
-	}
-	padded := make([]byte, len(data)+padLen)
-	copy(padded, data)
-	for i := len(data); i < len(padded); i++ {
-		padded[i] = byte(padLen)
+	// Data must be a multiple of block size (no padding per Moonlight protocol)
+	if len(data)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("data length %d is not a multiple of block size %d", len(data), aes.BlockSize)
 	}
 
-	// ECB mode encryption
-	encrypted := make([]byte, len(padded))
-	for i := 0; i < len(padded); i += aes.BlockSize {
-		block.Encrypt(encrypted[i:], padded[i:])
+	// ECB mode encryption (no padding)
+	encrypted := make([]byte, len(data))
+	for i := 0; i < len(data); i += aes.BlockSize {
+		block.Encrypt(encrypted[i:], data[i:])
 	}
 
 	return encrypted, nil
 }
 
-// aesDecrypt decrypts AES-128-ECB data
+// aesDecrypt decrypts AES-128-ECB data (no padding)
 func (c *Client) aesDecrypt(key, data []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
+	// ECB mode decryption (no padding removal)
 	decrypted := make([]byte, len(data))
 	for i := 0; i < len(data); i += aes.BlockSize {
 		block.Decrypt(decrypted[i:], data[i:])
-	}
-
-	// Remove PKCS7 padding
-	if len(decrypted) > 0 {
-		padLen := int(decrypted[len(decrypted)-1])
-		if padLen <= aes.BlockSize && padLen <= len(decrypted) {
-			decrypted = decrypted[:len(decrypted)-padLen]
-		}
 	}
 
 	return decrypted, nil
