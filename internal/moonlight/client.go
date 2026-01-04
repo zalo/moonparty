@@ -701,6 +701,9 @@ type Stream struct {
 	conn        net.Conn
 	ctx         context.Context
 	cancel      context.CancelFunc
+	riKey       []byte  // AES key for RTSP encryption
+	riKeyID     uint32  // Key ID
+	rtspURL     string  // RTSP session URL from launch response
 }
 
 // InputPacket represents gamepad/keyboard/mouse input
@@ -753,20 +756,40 @@ func (c *Client) StartStream(ctx context.Context, width, height, fps, bitrate in
 
 // launchApp starts an application on Sunshine
 func (s *Stream) launchApp(ctx context.Context, appID, width, height, fps, bitrate int) error {
-	// Build launch URL with parameters
-	params := fmt.Sprintf("uniqueid=%s&appid=%d&mode=%dx%dx%d&bitrate=%d&sops=0&rikey=0&rikeyid=0",
-		s.client.uniqueID, appID, width, height, fps, bitrate)
+	// Generate random AES key for RTSP encryption
+	s.riKey = make([]byte, 16)
+	rand.Read(s.riKey)
+	s.riKeyID = uint32(time.Now().UnixNano() & 0xFFFFFFFF)
 
-	url := fmt.Sprintf("http://%s:%d/launch?%s", s.client.host, s.client.port, params)
+	// Build launch URL with parameters (must use HTTPS port 47984)
+	riKeyHex := strings.ToUpper(hex.EncodeToString(s.riKey))
+	params := fmt.Sprintf("uniqueid=%s&appid=%d&mode=%dx%dx%d&additionalStates=1&sops=0&rikey=%s&rikeyid=%d&localAudioPlayMode=0&gcmap=0&gcpersist=0",
+		s.client.uniqueID, appID, width, height, fps, riKeyHex, s.riKeyID)
+
+	// Use HTTPS port 47984 for launch
+	url := fmt.Sprintf("https://%s:47984/launch?%s", s.client.host, params)
+
+	log.Printf("Launching app %d at %dx%d@%dfps...", appID, width, height, fps)
+
+	// Create HTTPS client with client certificate
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				Certificates:       []tls.Certificate{*s.client.clientCert},
+			},
+		},
+		Timeout: 30 * time.Second,
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
 
-	resp, err := s.client.httpClient.Do(req)
+	resp, err := httpsClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("launch request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -774,11 +797,22 @@ func (s *Stream) launchApp(ctx context.Context, appID, width, height, fps, bitra
 
 	// Parse response to get stream ports
 	var launchResp struct {
-		SessionURL string `xml:"sessionUrl0"`
+		SessionURL  string `xml:"sessionUrl0"`
+		GameSession string `xml:"gamesession"`
+		StatusCode  string `xml:"status_code,attr"`
+		StatusMsg   string `xml:"status_message,attr"`
 	}
 	if err := xml.Unmarshal(body, &launchResp); err != nil {
-		log.Printf("Launch response: %s", string(body))
+		log.Printf("Launch response parse error: %v, body: %s", err, string(body))
+		return fmt.Errorf("parse launch response: %w", err)
 	}
+
+	if launchResp.GameSession != "1" {
+		return fmt.Errorf("launch failed: %s (status: %s)", launchResp.StatusMsg, launchResp.StatusCode)
+	}
+
+	s.rtspURL = launchResp.SessionURL
+	log.Printf("Launch successful, RTSP URL: %s", s.rtspURL)
 
 	return s.connectStream(ctx)
 }

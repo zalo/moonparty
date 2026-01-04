@@ -149,13 +149,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.handlePeerInput(peer.ID, channelID, data)
 	}
 
-	// Forward ICE candidates to client
-	pc.OnICECandidate(func(candidate string) {
-		client.sendJSON(WSMessage{
-			Type:    WSMsgICECandidate,
-			Payload: jsonRaw(map[string]string{"candidate": candidate}),
-		})
-	})
+	// Note: We don't send separate ICE candidates because we wait for gathering
+	// to complete before sending the SDP answer (all candidates are in the SDP)
 
 	// Send session info to client
 	client.sendJSON(WSMessage{
