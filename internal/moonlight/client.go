@@ -1140,16 +1140,21 @@ func (s *Stream) openMediaSockets() error {
 	serverVideoAddr := &net.UDPAddr{IP: serverIP, Port: s.videoPort}
 	serverAudioAddr := &net.UDPAddr{IP: serverIP, Port: s.audioPort}
 
-	// Build ping packet: 16-byte payload + 4-byte big-endian sequence number
-	// Sunshine expects this format (SS_PING struct from moonlight-common-c)
+	// Sunshine ping format: SS_PING struct
+	// - 16-byte payload field (from hex-decoded X-SS-Ping-Payload header)
+	// - 4-byte sequence number (big-endian)
+	// Total: 20 bytes
+
 	var pingPayload [16]byte
-	if s.pingPayload != "" && len(s.pingPayload) == 16 {
-		copy(pingPayload[:], s.pingPayload)
-		log.Printf("Using Sunshine ping payload: %s", s.pingPayload)
-	} else {
-		// Legacy "PING" format (padded to 16 bytes)
-		copy(pingPayload[:], "PING")
-		log.Printf("Using legacy PING payload")
+	if s.pingPayload != "" {
+		// X-SS-Ping-Payload is hex-encoded (e.g., "E383D75321D01672" = 8 bytes)
+		decoded, err := hex.DecodeString(s.pingPayload)
+		if err != nil {
+			log.Printf("Warning: failed to decode ping payload as hex: %v", err)
+		} else {
+			copy(pingPayload[:], decoded)
+			log.Printf("Using Sunshine ping payload: %s -> %d decoded bytes", s.pingPayload, len(decoded))
+		}
 	}
 
 	// Moonlight sends ping attempts continuously every 500ms
