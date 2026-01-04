@@ -66,11 +66,12 @@ func NewClient(host string, port int) *Client {
 		port:       port,
 		deviceName: "Moonparty",
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second, // Longer timeout for pairing requests
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true,
 				},
+				ResponseHeaderTimeout: 30 * time.Second,
 			},
 		},
 	}
@@ -83,10 +84,18 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("identity error: %w", err)
 	}
 
+	// First, test basic connectivity to Sunshine
+	log.Printf("Testing connectivity to Sunshine at %s:%d...", c.host, c.port)
+	if err := c.testConnectivity(ctx); err != nil {
+		return fmt.Errorf("connectivity test failed: %w", err)
+	}
+	log.Println("Connectivity OK")
+
 	// Check if already paired
 	paired, err := c.checkPaired(ctx)
 	if err != nil {
-		return fmt.Errorf("pair check error: %w", err)
+		log.Printf("Pair check returned error (may need pairing): %v", err)
+		paired = false
 	}
 
 	c.paired = paired
@@ -119,6 +128,29 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.paired = true
 	} else {
 		log.Println("Successfully connected to Sunshine (already paired)")
+	}
+
+	return nil
+}
+
+// testConnectivity checks if we can reach the Sunshine server
+func (c *Client) testConnectivity(ctx context.Context) error {
+	url := fmt.Sprintf("http://%s:%d/serverinfo", c.host, c.port)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("cannot reach Sunshine: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil
@@ -161,10 +193,12 @@ func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
 	// Hex-encode the client certificate PEM (uppercase)
 	certPEMHex := strings.ToUpper(hex.EncodeToString(c.certPEM))
 
-	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&phrase=getservercert&salt=%s&clientcert=%s",
+	pairURL := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&phrase=getservercert&salt=%s&clientcert=%s",
 		c.host, c.port, c.uniqueID, c.pairingUUID, c.deviceName, saltHex, certPEMHex)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	log.Printf("Sending getservercert request (URL length: %d bytes)...", len(pairURL))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", pairURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +208,8 @@ func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	log.Printf("Got response: status=%d", resp.StatusCode)
 
 	body, _ := io.ReadAll(resp.Body)
 
@@ -186,6 +222,9 @@ func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
 	if err := xml.Unmarshal(body, &pairResp); err != nil {
 		return nil, fmt.Errorf("parse error: %w (body: %s)", err, string(body))
 	}
+
+	log.Printf("Parsed response: paired=%s, status=%s, msg=%s, cert_len=%d",
+		pairResp.Paired, pairResp.Status, pairResp.StatusMsg, len(pairResp.PlainCert))
 
 	if pairResp.Paired != "1" && pairResp.Status != "200" {
 		return nil, fmt.Errorf("pairing not started: %s", pairResp.StatusMsg)
