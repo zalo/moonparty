@@ -230,6 +230,7 @@ func (c *Client) cleanup() {
 }
 
 // doRTSPHandshake performs the RTSP session setup
+// Order matches moonlight-qt: OPTIONS, DESCRIBE, SETUP, ANNOUNCE, PLAY
 func (c *Client) doRTSPHandshake() error {
 	c.rtspClient = rtsp.NewClient(c.remoteAddr.IP.String(), 48010)
 
@@ -237,29 +238,16 @@ func (c *Client) doRTSPHandshake() error {
 		return err
 	}
 
-	// Build and send SDP
-	sdp := rtsp.BuildSDP(
-		c.appVersion[0]*1000000+c.appVersion[1]*10000+c.appVersion[2]*100+c.appVersion[3],
-		c.Config.Width,
-		c.Config.Height,
-		c.Config.FPS,
-		c.Config.PacketSize,
-		uint32(c.Config.SupportedVideoFormats),
-		uint32(c.Config.AudioConfiguration),
-		true, // GCM supported
-		0,    // RI key ID
-		c.Config.RemoteInputAesKey,
-	)
-
-	resp, err := c.rtspClient.DoAnnounce(sdp)
+	// 1. OPTIONS
+	resp, err := c.rtspClient.DoOptions()
 	if err != nil {
-		return fmt.Errorf("ANNOUNCE failed: %w", err)
+		return fmt.Errorf("OPTIONS failed: %w", err)
 	}
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("ANNOUNCE failed: %d %s", resp.StatusCode, resp.StatusText)
+		return fmt.Errorf("OPTIONS failed: %d %s", resp.StatusCode, resp.StatusText)
 	}
 
-	// DESCRIBE to get server capabilities
+	// 2. DESCRIBE to get server capabilities
 	resp, err = c.rtspClient.DoDescribe()
 	if err != nil {
 		return fmt.Errorf("DESCRIBE failed: %w", err)
@@ -272,7 +260,7 @@ func (c *Client) doRTSPHandshake() error {
 	serverSDP := rtsp.ParseSDP(resp.Body)
 	c.parseServerSDP(serverSDP)
 
-	// SETUP streams
+	// 3. SETUP streams (audio, video, control)
 	ports, err := c.rtspClient.DoSetup()
 	if err != nil {
 		return err
@@ -293,7 +281,29 @@ func (c *Client) doRTSPHandshake() error {
 		c.controlPort = 47999
 	}
 
-	// PLAY
+	// 4. ANNOUNCE with SDP
+	sdp := rtsp.BuildSDP(
+		c.appVersion[0]*1000000+c.appVersion[1]*10000+c.appVersion[2]*100+c.appVersion[3],
+		c.Config.Width,
+		c.Config.Height,
+		c.Config.FPS,
+		c.Config.PacketSize,
+		uint32(c.Config.SupportedVideoFormats),
+		uint32(c.Config.AudioConfiguration),
+		true, // GCM supported
+		0,    // RI key ID
+		c.Config.RemoteInputAesKey,
+	)
+
+	resp, err = c.rtspClient.DoAnnounce(sdp)
+	if err != nil {
+		return fmt.Errorf("ANNOUNCE failed: %w", err)
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("ANNOUNCE failed: %d %s", resp.StatusCode, resp.StatusText)
+	}
+
+	// 5. PLAY
 	resp, err = c.rtspClient.DoPlay()
 	if err != nil {
 		return fmt.Errorf("PLAY failed: %w", err)

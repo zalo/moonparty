@@ -75,13 +75,18 @@ func (c *Client) Close() {
 	}
 }
 
+// DoOptions performs the RTSP OPTIONS request
+func (c *Client) DoOptions() (*Response, error) {
+	return c.doRequest("OPTIONS", "", nil, "")
+}
+
 // DoAnnounce performs the RTSP ANNOUNCE request
 func (c *Client) DoAnnounce(sdp string) (*Response, error) {
 	headers := map[string]string{
 		// Note: Sunshine expects lowercase 't' in Content-type
 		"Content-type": "application/sdp",
 	}
-	return c.doRequest("ANNOUNCE", "streamid=control", headers, sdp)
+	return c.doRequest("ANNOUNCE", "", headers, sdp)
 }
 
 // DoDescribe performs the RTSP DESCRIBE request
@@ -89,7 +94,7 @@ func (c *Client) DoDescribe() (*Response, error) {
 	headers := map[string]string{
 		"Accept": "application/sdp",
 	}
-	return c.doRequest("DESCRIBE", "streamid=control", headers, "")
+	return c.doRequest("DESCRIBE", "", headers, "")
 }
 
 // DoSetup performs the RTSP SETUP requests for all streams
@@ -97,38 +102,43 @@ func (c *Client) DoDescribe() (*Response, error) {
 func (c *Client) DoSetup() (*StreamPorts, error) {
 	ports := &StreamPorts{}
 
-	// Setup video stream with Transport header
+	// Setup audio stream first (like working client)
+	// Path format: streamid=audio/0/0
 	headers := map[string]string{
-		"Transport": "unicast;client_port=47998",
-	}
-	resp, err := c.doRequest("SETUP", "streamid=video", headers, "")
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("SETUP video failed: %d %s", resp.StatusCode, resp.StatusText)
-	}
-	c.sessionID = resp.Headers["Session"]
-	ports.VideoPort = parseTransportPort(resp.Headers["Transport"])
-
-	// Setup audio stream
-	headers = map[string]string{
 		"Transport": "unicast;client_port=48000",
 	}
-	resp, err = c.doRequest("SETUP", "streamid=audio", headers, "")
+	resp, err := c.doRequest("SETUP", "streamid=audio/0/0", headers, "")
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("SETUP audio failed: %d %s", resp.StatusCode, resp.StatusText)
 	}
+	// Parse session ID (format: "DEADBEEFCAFE;timeout = 90")
+	if session := resp.Headers["Session"]; session != "" && c.sessionID == "" {
+		parts := strings.Split(session, ";")
+		c.sessionID = strings.TrimSpace(parts[0])
+	}
 	ports.AudioPort = parseTransportPort(resp.Headers["Transport"])
 
-	// Setup control stream
+	// Setup video stream
+	headers = map[string]string{
+		"Transport": "unicast;client_port=47998",
+	}
+	resp, err = c.doRequest("SETUP", "streamid=video/0/0", headers, "")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("SETUP video failed: %d %s", resp.StatusCode, resp.StatusText)
+	}
+	ports.VideoPort = parseTransportPort(resp.Headers["Transport"])
+
+	// Setup control stream (path includes /13/0)
 	headers = map[string]string{
 		"Transport": "unicast;client_port=47999",
 	}
-	resp, err = c.doRequest("SETUP", "streamid=control", headers, "")
+	resp, err = c.doRequest("SETUP", "streamid=control/13/0", headers, "")
 	if err != nil {
 		return nil, err
 	}
@@ -142,16 +152,17 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 
 // DoPlay performs the RTSP PLAY request
 func (c *Client) DoPlay() (*Response, error) {
-	return c.doRequest("PLAY", "streamid=control", nil, "")
+	return c.doRequest("PLAY", "", nil, "")
 }
 
 // DoTeardown performs the RTSP TEARDOWN request
 func (c *Client) DoTeardown() (*Response, error) {
-	return c.doRequest("TEARDOWN", "streamid=control", nil, "")
+	return c.doRequest("TEARDOWN", "", nil, "")
 }
 
 // doRequest performs an RTSP request and returns the response
 // NOTE: Sunshine closes the connection after each response, so we reconnect for each request
+// uri should be empty for ANNOUNCE/DESCRIBE/PLAY, or "streamid=video/0/0" etc. for SETUP
 func (c *Client) doRequest(method, uri string, headers map[string]string, body string) (*Response, error) {
 	// Reconnect for each request (Sunshine closes connection after each response)
 	if c.conn != nil {
@@ -164,9 +175,15 @@ func (c *Client) doRequest(method, uri string, headers map[string]string, body s
 
 	c.cseq++
 
-	// Build request - use rtsp://host:port format (no path) for Sunshine compatibility
+	// Build request target
+	// For SETUP, include the streamid path; for others, just host:port
 	var req strings.Builder
-	target := fmt.Sprintf("rtsp://%s:%d", c.serverIP, c.serverPort)
+	var target string
+	if uri != "" && method == "SETUP" {
+		target = fmt.Sprintf("rtsp://%s:%d/%s", c.serverIP, c.serverPort, uri)
+	} else {
+		target = fmt.Sprintf("rtsp://%s:%d", c.serverIP, c.serverPort)
+	}
 	req.WriteString(fmt.Sprintf("%s %s RTSP/1.0\r\n", method, target))
 	req.WriteString(fmt.Sprintf("CSeq: %d\r\n", c.cseq))
 	req.WriteString("X-GS-ClientVersion: 14\r\n")
