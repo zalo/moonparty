@@ -393,8 +393,26 @@ func (s *Server) handleICEServers(w http.ResponseWriter, r *http.Request) {
 
 // startStreaming initiates the video stream from Sunshine
 func (s *Server) startStreaming(ctx context.Context, sess *session.Session) error {
-	// Connect to Sunshine and start streaming
-	stream, err := s.moonlight.StartStream(ctx, s.config.StreamSettings.Width, s.config.StreamSettings.Height, s.config.StreamSettings.FPS, s.config.StreamSettings.Bitrate)
+	var stream moonlight.Streamer
+	var err error
+
+	// Choose streaming backend
+	if s.config.UseLimelight {
+		log.Println("Using moonlight-common-c (limelight) backend for streaming")
+		stream, err = s.moonlight.StartStreamWithLimelight(ctx,
+			s.config.StreamSettings.Width,
+			s.config.StreamSettings.Height,
+			s.config.StreamSettings.FPS,
+			s.config.StreamSettings.Bitrate)
+	} else {
+		log.Println("Using native Go streaming backend")
+		stream, err = s.moonlight.StartStream(ctx,
+			s.config.StreamSettings.Width,
+			s.config.StreamSettings.Height,
+			s.config.StreamSettings.FPS,
+			s.config.StreamSettings.Bitrate)
+	}
+
 	if err != nil {
 		return err
 	}
