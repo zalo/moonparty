@@ -1014,12 +1014,14 @@ func (s *Stream) rtspSetup(streamID string) error {
 	// Parse X-SS-Ping-Payload for Sunshine ping protocol
 	if ping, ok := headers["X-SS-Ping-Payload"]; ok {
 		s.pingPayload = ping
+		log.Printf("Got ping payload from %s: %s", streamID, ping)
 	}
 
 	// Parse Transport header for server port
 	if transport, ok := headers["Transport"]; ok {
 		// Format: "server_port=47998"
 		for _, part := range strings.Split(transport, ";") {
+			part = strings.TrimSpace(part)
 			if strings.HasPrefix(part, "server_port=") {
 				portStr := strings.TrimPrefix(part, "server_port=")
 				port, _ := strconv.Atoi(portStr)
@@ -1081,9 +1083,26 @@ func (s *Stream) rtspPlay() error {
 
 // openMediaSockets opens UDP sockets for video and audio
 func (s *Stream) openMediaSockets() error {
+	// Resolve the server address
+	serverIP := net.ParseIP(s.client.host)
+	if serverIP == nil {
+		// Try to resolve hostname
+		addrs, err := net.LookupIP(s.client.host)
+		if err != nil || len(addrs) == 0 {
+			return fmt.Errorf("failed to resolve host %s: %v", s.client.host, err)
+		}
+		serverIP = addrs[0]
+	}
+
+	// Use IPv4 explicitly to match localhost connections
+	networkType := "udp4"
+	if serverIP.To4() == nil {
+		networkType = "udp6"
+	}
+
 	// Open UDP socket for video
-	videoAddr := &net.UDPAddr{Port: 0} // Bind to any available port
-	videoConn, err := net.ListenUDP("udp", videoAddr)
+	videoAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	videoConn, err := net.ListenUDP(networkType, videoAddr)
 	if err != nil {
 		return fmt.Errorf("failed to open video socket: %w", err)
 	}
@@ -1091,8 +1110,8 @@ func (s *Stream) openMediaSockets() error {
 	log.Printf("Video UDP socket bound to %s", videoConn.LocalAddr())
 
 	// Open UDP socket for audio
-	audioAddr := &net.UDPAddr{Port: 0}
-	audioConn, err := net.ListenUDP("udp", audioAddr)
+	audioAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	audioConn, err := net.ListenUDP(networkType, audioAddr)
 	if err != nil {
 		videoConn.Close()
 		return fmt.Errorf("failed to open audio socket: %w", err)
@@ -1100,28 +1119,24 @@ func (s *Stream) openMediaSockets() error {
 	s.audioConn = audioConn
 	log.Printf("Audio UDP socket bound to %s", audioConn.LocalAddr())
 
-	// Send initial ping to video/audio ports to establish connection
-	serverVideoAddr := &net.UDPAddr{
-		IP:   net.ParseIP(s.client.host),
-		Port: s.videoPort,
-	}
-	serverAudioAddr := &net.UDPAddr{
-		IP:   net.ParseIP(s.client.host),
-		Port: s.audioPort,
-	}
+	// Server addresses for video and audio
+	serverVideoAddr := &net.UDPAddr{IP: serverIP, Port: s.videoPort}
+	serverAudioAddr := &net.UDPAddr{IP: serverIP, Port: s.audioPort}
 
-	// Send ping with payload or "PING"
+	// Send ping with payload from RTSP SETUP or legacy "PING"
 	pingData := []byte("PING")
 	if s.pingPayload != "" {
 		pingData = []byte(s.pingPayload)
+		log.Printf("Using Sunshine ping payload: %s", s.pingPayload)
 	}
 
-	log.Printf("Sending ping to video port %d", s.videoPort)
+	// Send ping to establish return path for UDP
+	log.Printf("Sending ping to video %s: %s", serverVideoAddr, string(pingData))
 	if _, err := videoConn.WriteToUDP(pingData, serverVideoAddr); err != nil {
 		log.Printf("Warning: failed to send video ping: %v", err)
 	}
 
-	log.Printf("Sending ping to audio port %d", s.audioPort)
+	log.Printf("Sending ping to audio %s: %s", serverAudioAddr, string(pingData))
 	if _, err := audioConn.WriteToUDP(pingData, serverAudioAddr); err != nil {
 		log.Printf("Warning: failed to send audio ping: %v", err)
 	}
@@ -1133,19 +1148,29 @@ func (s *Stream) openMediaSockets() error {
 func (s *Stream) receiveVideoLoop() {
 	defer s.videoConn.Close()
 
+	log.Printf("Video receive loop started, waiting for packets...")
+
 	buf := make([]byte, 65536) // Large buffer for video packets
 	packetsReceived := 0
+	lastLogTime := time.Now()
+
 	for {
 		select {
 		case <-s.ctx.Done():
+			log.Printf("Video receive loop stopped, received %d packets total", packetsReceived)
 			return
 		default:
 		}
 
-		s.videoConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, _, err := s.videoConn.ReadFromUDP(buf)
+		s.videoConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, addr, err := s.videoConn.ReadFromUDP(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Log every 5 seconds while waiting
+				if time.Since(lastLogTime) > 5*time.Second {
+					log.Printf("Video: still waiting for packets (received %d so far)...", packetsReceived)
+					lastLogTime = time.Now()
+				}
 				continue
 			}
 			log.Printf("Video receive error: %v", err)
@@ -1158,7 +1183,9 @@ func (s *Stream) receiveVideoLoop() {
 
 		packetsReceived++
 		if packetsReceived == 1 {
-			log.Printf("Receiving video packets from Sunshine")
+			log.Printf("Receiving video packets from Sunshine (first from %s, %d bytes)", addr, n)
+		} else if packetsReceived%1000 == 0 {
+			log.Printf("Video: received %d packets", packetsReceived)
 		}
 
 		// Send the complete RTP packet to the channel
@@ -1175,19 +1202,29 @@ func (s *Stream) receiveVideoLoop() {
 func (s *Stream) receiveAudioLoop() {
 	defer s.audioConn.Close()
 
+	log.Printf("Audio receive loop started, waiting for packets...")
+
 	buf := make([]byte, 4096)
 	packetsReceived := 0
+	lastLogTime := time.Now()
+
 	for {
 		select {
 		case <-s.ctx.Done():
+			log.Printf("Audio receive loop stopped, received %d packets total", packetsReceived)
 			return
 		default:
 		}
 
-		s.audioConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, _, err := s.audioConn.ReadFromUDP(buf)
+		s.audioConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, addr, err := s.audioConn.ReadFromUDP(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Log every 5 seconds while waiting
+				if time.Since(lastLogTime) > 5*time.Second {
+					log.Printf("Audio: still waiting for packets (received %d so far)...", packetsReceived)
+					lastLogTime = time.Now()
+				}
 				continue
 			}
 			log.Printf("Audio receive error: %v", err)
@@ -1200,7 +1237,7 @@ func (s *Stream) receiveAudioLoop() {
 
 		packetsReceived++
 		if packetsReceived == 1 {
-			log.Printf("Receiving audio packets from Sunshine")
+			log.Printf("Receiving audio packets from Sunshine (first from %s, %d bytes)", addr, n)
 		}
 
 		// Send the complete RTP packet to the channel
