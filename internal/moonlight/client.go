@@ -711,11 +711,15 @@ type Stream struct {
 	riKey       []byte  // AES key for stream encryption
 	riKeyID     uint32  // Key ID
 
-	// Ports from RTSP SETUP
+	// Server ports from RTSP SETUP
 	videoPort   int
 	audioPort   int
 	controlPort int
 	rtspPort    int
+
+	// Local (client) ports - bound when sockets are opened
+	localVideoPort int
+	localAudioPort int
 
 	// UDP connections
 	videoConn   *net.UDPConn
@@ -785,17 +789,20 @@ func (c *Client) StartStream(ctx context.Context, width, height, fps, bitrate in
 		return nil, err
 	}
 
-	// Perform RTSP handshake
+	// Open UDP sockets FIRST - we need the local ports for RTSP SETUP
+	if err := s.openMediaSockets(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to open media sockets: %w", err)
+	}
+
+	// Perform RTSP handshake (uses the socket ports in Transport header)
 	if err := s.performRTSPHandshake(ctx); err != nil {
 		cancel()
 		return nil, fmt.Errorf("RTSP handshake failed: %w", err)
 	}
 
-	// Open UDP sockets for video/audio
-	if err := s.openMediaSockets(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to open media sockets: %w", err)
-	}
+	// Start ping threads (after RTSP handshake when we have the ping payload)
+	s.startPingThreads()
 
 	// Start receiving video/audio
 	go s.receiveVideoLoop()
@@ -999,7 +1006,20 @@ func (s *Stream) rtspDescribe() error {
 
 func (s *Stream) rtspSetup(streamID string) error {
 	target := fmt.Sprintf("rtsp://%s:%d/%s", s.client.host, s.rtspPort, streamID)
-	headers, _, err := s.rtspSendRequest("SETUP", target, "")
+
+	// Determine client port based on stream type
+	var clientPort int
+	if strings.Contains(streamID, "video") {
+		clientPort = s.localVideoPort
+	} else if strings.Contains(streamID, "audio") {
+		clientPort = s.localAudioPort
+	} else {
+		// For control, we don't use UDP - use 0 or a placeholder
+		clientPort = 0
+	}
+
+	// Send SETUP with Transport header including client_port
+	headers, _, err := s.rtspSendRequestWithTransport("SETUP", target, clientPort)
 	if err != nil {
 		return err
 	}
@@ -1027,19 +1047,91 @@ func (s *Stream) rtspSetup(streamID string) error {
 				port, _ := strconv.Atoi(portStr)
 				if strings.Contains(streamID, "video") {
 					s.videoPort = port
-					log.Printf("Video port: %d", port)
+					log.Printf("Video server port: %d (client port: %d)", port, clientPort)
 				} else if strings.Contains(streamID, "audio") {
 					s.audioPort = port
-					log.Printf("Audio port: %d", port)
+					log.Printf("Audio server port: %d (client port: %d)", port, clientPort)
 				} else if strings.Contains(streamID, "control") {
 					s.controlPort = port
-					log.Printf("Control port: %d", port)
+					log.Printf("Control server port: %d", port)
 				}
 			}
 		}
 	}
 
 	return nil
+}
+
+// rtspSendRequestWithTransport sends RTSP SETUP with Transport header
+func (s *Stream) rtspSendRequestWithTransport(method, target string, clientPort int) (map[string]string, string, error) {
+	// Open a new connection for this request
+	addr := fmt.Sprintf("%s:%d", s.client.host, s.rtspPort)
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to connect to RTSP: %w", err)
+	}
+	defer conn.Close()
+
+	// Build request with Transport header
+	var req strings.Builder
+	req.WriteString(fmt.Sprintf("%s %s RTSP/1.0\r\n", method, target))
+	req.WriteString(fmt.Sprintf("CSeq: %d\r\n", s.rtspSeqNum))
+	req.WriteString("X-GS-ClientVersion: 14\r\n")
+	req.WriteString(fmt.Sprintf("Host: %s\r\n", s.client.host))
+	if s.sessionID != "" {
+		req.WriteString(fmt.Sprintf("Session: %s\r\n", s.sessionID))
+	}
+	// Add Transport header with client port
+	if clientPort > 0 {
+		req.WriteString(fmt.Sprintf("Transport: unicast;client_port=%d\r\n", clientPort))
+	}
+	req.WriteString("\r\n")
+
+	s.rtspSeqNum++
+
+	log.Printf("RTSP SETUP: %s with client_port=%d", target, clientPort)
+
+	// Send request
+	if _, err := conn.Write([]byte(req.String())); err != nil {
+		return nil, "", err
+	}
+
+	// Read response
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	buf := make([]byte, 8192)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, "", err
+	}
+
+	response := string(buf[:n])
+
+	// Parse response
+	headers := make(map[string]string)
+	lines := strings.Split(response, "\r\n")
+
+	if len(lines) < 1 || !strings.Contains(lines[0], "200") {
+		return nil, "", fmt.Errorf("RTSP error: %s", lines[0])
+	}
+
+	var payload string
+	inPayload := false
+	for _, line := range lines[1:] {
+		if line == "" {
+			inPayload = true
+			continue
+		}
+		if inPayload {
+			payload += line + "\n"
+		} else {
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) == 2 {
+				headers[parts[0]] = parts[1]
+			}
+		}
+	}
+
+	return headers, payload, nil
 }
 
 func (s *Stream) rtspAnnounce() error {
@@ -1082,40 +1174,11 @@ func (s *Stream) rtspPlay() error {
 }
 
 // openMediaSockets opens UDP sockets for video and audio
+// Must be called BEFORE RTSP SETUP to get local ports for Transport header
 func (s *Stream) openMediaSockets() error {
-	// For localhost, always use 127.0.0.1 (IPv4) since Sunshine binds to IPv4
-	host := s.client.host
-	if host == "localhost" {
-		host = "127.0.0.1"
-	}
-
-	// Resolve the server address
-	serverIP := net.ParseIP(host)
-	if serverIP == nil {
-		// Try to resolve hostname - prefer IPv4
-		addrs, err := net.LookupIP(host)
-		if err != nil || len(addrs) == 0 {
-			return fmt.Errorf("failed to resolve host %s: %v", host, err)
-		}
-		// Prefer IPv4 address
-		for _, addr := range addrs {
-			if addr.To4() != nil {
-				serverIP = addr
-				break
-			}
-		}
-		if serverIP == nil {
-			serverIP = addrs[0]
-		}
-	}
-
-	// Use IPv4 explicitly to match Sunshine (which typically uses IPv4)
+	// Use IPv4 to match Sunshine
 	networkType := "udp4"
-	if serverIP.To4() == nil {
-		networkType = "udp6"
-	}
-
-	log.Printf("Using %s for media sockets, server IP: %s", networkType, serverIP)
+	log.Printf("Opening media sockets using %s", networkType)
 
 	// Open UDP socket for video
 	videoAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
@@ -1124,7 +1187,8 @@ func (s *Stream) openMediaSockets() error {
 		return fmt.Errorf("failed to open video socket: %w", err)
 	}
 	s.videoConn = videoConn
-	log.Printf("Video UDP socket bound to %s", videoConn.LocalAddr())
+	s.localVideoPort = videoConn.LocalAddr().(*net.UDPAddr).Port
+	log.Printf("Video UDP socket bound to %s (port %d)", videoConn.LocalAddr(), s.localVideoPort)
 
 	// Open UDP socket for audio
 	audioAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
@@ -1134,7 +1198,35 @@ func (s *Stream) openMediaSockets() error {
 		return fmt.Errorf("failed to open audio socket: %w", err)
 	}
 	s.audioConn = audioConn
-	log.Printf("Audio UDP socket bound to %s", audioConn.LocalAddr())
+	s.localAudioPort = audioConn.LocalAddr().(*net.UDPAddr).Port
+	log.Printf("Audio UDP socket bound to %s (port %d)", audioConn.LocalAddr(), s.localAudioPort)
+
+	return nil
+}
+
+// startPingThreads starts continuous ping threads for video and audio
+// Must be called AFTER RTSP SETUP (when we have the ping payload)
+func (s *Stream) startPingThreads() {
+	// For localhost, always use 127.0.0.1 (IPv4) since Sunshine binds to IPv4
+	host := s.client.host
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+
+	// Resolve the server address
+	serverIP := net.ParseIP(host)
+	if serverIP == nil {
+		addrs, _ := net.LookupIP(host)
+		for _, addr := range addrs {
+			if addr.To4() != nil {
+				serverIP = addr
+				break
+			}
+		}
+		if serverIP == nil && len(addrs) > 0 {
+			serverIP = addrs[0]
+		}
+	}
 
 	// Server addresses for video and audio
 	serverVideoAddr := &net.UDPAddr{IP: serverIP, Port: s.videoPort}
@@ -1157,8 +1249,6 @@ func (s *Stream) openMediaSockets() error {
 		}
 	}
 
-	// Moonlight sends ping attempts continuously every 500ms
-	// The ping packet is 20 bytes: 16-byte payload + 4-byte sequence number (big-endian)
 	log.Printf("Starting ping threads for video %s and audio %s", serverVideoAddr, serverAudioAddr)
 
 	// Start video ping goroutine (runs until stream closes)
@@ -1181,12 +1271,12 @@ func (s *Stream) openMediaSockets() error {
 			pingPacket[18] = byte(seqNum >> 8)
 			pingPacket[19] = byte(seqNum)
 
-			if _, err := videoConn.WriteToUDP(pingPacket, serverVideoAddr); err != nil {
+			if _, err := s.videoConn.WriteToUDP(pingPacket, serverVideoAddr); err != nil {
 				log.Printf("Warning: video ping failed: %v", err)
 			}
 
 			if seqNum == 1 {
-				log.Printf("Sent first video ping (20 bytes)")
+				log.Printf("Sent first video ping (20 bytes) to %s", serverVideoAddr)
 			}
 
 			time.Sleep(500 * time.Millisecond)
@@ -1213,19 +1303,17 @@ func (s *Stream) openMediaSockets() error {
 			pingPacket[18] = byte(seqNum >> 8)
 			pingPacket[19] = byte(seqNum)
 
-			if _, err := audioConn.WriteToUDP(pingPacket, serverAudioAddr); err != nil {
+			if _, err := s.audioConn.WriteToUDP(pingPacket, serverAudioAddr); err != nil {
 				log.Printf("Warning: audio ping failed: %v", err)
 			}
 
 			if seqNum == 1 {
-				log.Printf("Sent first audio ping (20 bytes)")
+				log.Printf("Sent first audio ping (20 bytes) to %s", serverAudioAddr)
 			}
 
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
-
-	return nil
 }
 
 // receiveVideoLoop receives video RTP packets from Sunshine
