@@ -351,20 +351,12 @@ func (c *Client) pairServerChallengeResponse(ctx context.Context, aesKey, server
 	}
 	clientCertSignature := cert.Signature
 
-	// Debug: print component sizes
-	log.Printf("DEBUG Phase 3 hash components:")
-	log.Printf("  server_challenge: len=%d, first16=%s", len(serverChallenge), hex.EncodeToString(serverChallenge[:min(16, len(serverChallenge))]))
-	log.Printf("  client_cert_sig: len=%d, first16=%s", len(clientCertSignature), hex.EncodeToString(clientCertSignature[:min(16, len(clientCertSignature))]))
-	log.Printf("  client_secret: len=%d, hex=%s", len(clientSecret), hex.EncodeToString(clientSecret))
-
 	// Compute challenge response hash: SHA256(server_challenge + client_cert_signature + client_secret)
 	h := sha256.New()
 	h.Write(serverChallenge)
 	h.Write(clientCertSignature)
 	h.Write(clientSecret)
 	challengeResponseHash := h.Sum(nil)
-
-	log.Printf("  challengeResponseHash: %s", hex.EncodeToString(challengeResponseHash))
 
 	// Encrypt the hash
 	encryptedHash, err := c.aesEncrypt(aesKey, challengeResponseHash)
@@ -435,11 +427,6 @@ func (c *Client) pairClientSecret(ctx context.Context, aesKey, clientSecret []by
 		return fmt.Errorf("sign client secret: %w", err)
 	}
 
-	log.Printf("DEBUG Phase 4:")
-	log.Printf("  client_secret: %s", hex.EncodeToString(clientSecret))
-	log.Printf("  secret_sha256: %s", hex.EncodeToString(secretHash))
-	log.Printf("  signature_len: %d, first32: %s", len(signature), hex.EncodeToString(signature[:32]))
-
 	// Client pairing secret = client_secret (16 bytes) + signature
 	pairingSecret := append(clientSecret, signature...)
 
@@ -447,8 +434,6 @@ func (c *Client) pairClientSecret(ctx context.Context, aesKey, clientSecret []by
 	secretHex := strings.ToUpper(hex.EncodeToString(pairingSecret))
 	pairURL := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&clientpairingsecret=%s",
 		c.host, c.port, c.uniqueID, c.pairingUUID, c.deviceName, secretHex)
-
-	log.Printf("Sending clientpairingsecret (Phase 4), secret_len=%d, sig_len=%d...", len(clientSecret), len(signature))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", pairURL, nil)
 	if err != nil {
