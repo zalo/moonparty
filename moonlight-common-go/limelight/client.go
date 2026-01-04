@@ -367,13 +367,17 @@ func (c *Client) initControlStream() error {
 // initVideoStream initializes the video stream
 func (c *Client) initVideoStream() error {
 	c.videoStream = video.NewStream(c.Config, c.Decoder, c.pingPayload)
-	return c.videoStream.Start(c.ctx, c.remoteAddr, c.localAddr, c.videoPort)
+	// Bind to the same port we told the server in RTSP SETUP (client_port=47998)
+	localAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 47998}
+	return c.videoStream.Start(c.ctx, c.remoteAddr, localAddr, c.videoPort)
 }
 
 // initAudioStream initializes the audio stream
 func (c *Client) initAudioStream() error {
 	c.audioStream = audio.NewStream(c.Config, c.Audio, c.pingPayload)
-	return c.audioStream.Start(c.ctx, c.remoteAddr, c.localAddr, c.audioPort, c.opusConfig, c.audioPacketDuration)
+	// Bind to the same port we told the server in RTSP SETUP (client_port=48000)
+	localAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 48000}
+	return c.audioStream.Start(c.ctx, c.remoteAddr, localAddr, c.audioPort, c.opusConfig, c.audioPacketDuration)
 }
 
 // initInputStream initializes the input stream
