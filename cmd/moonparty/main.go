@@ -19,16 +19,25 @@ func main() {
 	newIdentity := flag.Bool("new-identity", false, "Generate a new client identity (use if pairing is stuck)")
 	flag.Parse()
 
-	// Create configuration
+	// Create configuration with defaults
 	cfg := &server.Config{
-		ListenAddr:        *listenAddr,
-		SunshineHost:      *sunshineHost,
-		SunshinePort:      *sunshinePort,
-		ConfigPath:        *configPath,
-		ForceNewIdentity:  *newIdentity,
+		ListenAddr:       *listenAddr,
+		SunshineHost:     *sunshineHost,
+		SunshinePort:     *sunshinePort,
+		ConfigPath:       *configPath,
+		ForceNewIdentity: *newIdentity,
+		MaxPlayers:       4,
 		ICEServers: []string{
 			"stun:stun.l.google.com:19302",
 			"stun:stun1.l.google.com:19302",
+		},
+		StreamSettings: server.StreamSettings{
+			Width:         1920,
+			Height:        1080,
+			FPS:           60,
+			Bitrate:       20000,
+			Codec:         "h264",
+			AudioChannels: 2,
 		},
 	}
 

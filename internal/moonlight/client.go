@@ -692,18 +692,47 @@ func (c *Client) checkPaired(ctx context.Context) (bool, error) {
 	return serverInfo.PairStatus == "1", nil
 }
 
+// Streaming ports (relative to base port 47989)
+const (
+	PortVideoOffset   = 9  // 47998
+	PortControlOffset = 10 // 47999
+	PortAudioOffset   = 11 // 48000
+	PortRTSPOffset    = 21 // 48010
+)
+
 // Stream represents an active game stream
 type Stream struct {
 	client      *Client
 	videoFrames chan []byte
 	audioFrames chan []byte
 	inputChan   chan InputPacket
-	conn        net.Conn
 	ctx         context.Context
 	cancel      context.CancelFunc
-	riKey       []byte  // AES key for RTSP encryption
+	riKey       []byte  // AES key for stream encryption
 	riKeyID     uint32  // Key ID
-	rtspURL     string  // RTSP session URL from launch response
+
+	// Ports from RTSP SETUP
+	videoPort   int
+	audioPort   int
+	controlPort int
+	rtspPort    int
+
+	// UDP connections
+	videoConn   *net.UDPConn
+	audioConn   *net.UDPConn
+	controlConn net.Conn
+
+	// RTSP state
+	rtspConn    net.Conn
+	rtspSeqNum  int
+	sessionID   string
+	pingPayload string
+
+	// Stream configuration
+	width   int
+	height  int
+	fps     int
+	bitrate int
 }
 
 // InputPacket represents gamepad/keyboard/mouse input
@@ -740,6 +769,14 @@ func (c *Client) StartStream(ctx context.Context, width, height, fps, bitrate in
 		inputChan:   make(chan InputPacket, 256),
 		ctx:         streamCtx,
 		cancel:      cancel,
+		width:       width,
+		height:      height,
+		fps:         fps,
+		bitrate:     bitrate,
+		rtspPort:    c.port + PortRTSPOffset,
+		videoPort:   c.port + PortVideoOffset,
+		audioPort:   c.port + PortAudioOffset,
+		controlPort: c.port + PortControlOffset,
 	}
 
 	// Launch the desktop app (app ID 0 is typically Desktop)
@@ -748,15 +785,28 @@ func (c *Client) StartStream(ctx context.Context, width, height, fps, bitrate in
 		return nil, err
 	}
 
+	// Perform RTSP handshake
+	if err := s.performRTSPHandshake(ctx); err != nil {
+		cancel()
+		return nil, fmt.Errorf("RTSP handshake failed: %w", err)
+	}
+
+	// Open UDP sockets for video/audio
+	if err := s.openMediaSockets(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to open media sockets: %w", err)
+	}
+
 	// Start receiving video/audio
-	go s.receiveLoop()
+	go s.receiveVideoLoop()
+	go s.receiveAudioLoop()
 
 	return s, nil
 }
 
 // launchApp starts an application on Sunshine
 func (s *Stream) launchApp(ctx context.Context, appID, width, height, fps, bitrate int) error {
-	// Generate random AES key for RTSP encryption
+	// Generate random AES key for stream encryption
 	s.riKey = make([]byte, 16)
 	rand.Read(s.riKey)
 	s.riKeyID = uint32(time.Now().UnixNano() & 0xFFFFFFFF)
@@ -811,57 +861,350 @@ func (s *Stream) launchApp(ctx context.Context, appID, width, height, fps, bitra
 		return fmt.Errorf("launch failed: %s (status: %s)", launchResp.StatusMsg, launchResp.StatusCode)
 	}
 
-	s.rtspURL = launchResp.SessionURL
-	log.Printf("Launch successful, RTSP URL: %s", s.rtspURL)
-
-	return s.connectStream(ctx)
-}
-
-// connectStream establishes the RTSP/UDP connections for video/audio
-func (s *Stream) connectStream(ctx context.Context) error {
-	// The actual streaming uses RTSP for control and UDP for media
-	// Video port is typically 47998, audio is 47999, control is 47999
-
-	// For now, establish a control connection
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-		Certificates:       []tls.Certificate{*s.client.clientCert},
-	}
-
-	addr := fmt.Sprintf("%s:%d", s.client.host, 47984) // Control port
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, tlsConfig)
-	if err != nil {
-		log.Printf("Could not connect to control port: %v", err)
-		// Continue anyway for demo purposes
-		return nil
-	}
-
-	s.conn = conn
+	log.Printf("Launch successful, RTSP URL: %s", launchResp.SessionURL)
 	return nil
 }
 
-// receiveLoop handles incoming video/audio data
-func (s *Stream) receiveLoop() {
-	defer s.Close()
+// performRTSPHandshake performs the RTSP handshake with Sunshine
+func (s *Stream) performRTSPHandshake(ctx context.Context) error {
+	// Connect to RTSP port
+	addr := fmt.Sprintf("%s:%d", s.client.host, s.rtspPort)
+	log.Printf("Connecting to RTSP server at %s", addr)
 
-	// In a real implementation, this would:
-	// 1. Receive RTSP setup response
-	// 2. Open UDP sockets for video/audio
-	// 3. Parse RTP packets and extract NAL units / Opus frames
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to connect to RTSP: %w", err)
+	}
+	s.rtspConn = conn
+	s.rtspSeqNum = 1
 
-	// For now, generate placeholder data for testing
-	ticker := time.NewTicker(16 * time.Millisecond) // ~60fps
-	defer ticker.Stop()
+	// 1. OPTIONS
+	if err := s.rtspOptions(); err != nil {
+		return fmt.Errorf("OPTIONS failed: %w", err)
+	}
 
-	frameNum := 0
+	// 2. DESCRIBE
+	if err := s.rtspDescribe(); err != nil {
+		return fmt.Errorf("DESCRIBE failed: %w", err)
+	}
+
+	// 3. SETUP audio
+	if err := s.rtspSetup("streamid=audio/0/0"); err != nil {
+		return fmt.Errorf("SETUP audio failed: %w", err)
+	}
+
+	// 4. SETUP video
+	if err := s.rtspSetup("streamid=video/0/0"); err != nil {
+		return fmt.Errorf("SETUP video failed: %w", err)
+	}
+
+	// 5. SETUP control
+	if err := s.rtspSetup("streamid=control/13/0"); err != nil {
+		return fmt.Errorf("SETUP control failed: %w", err)
+	}
+
+	// 6. ANNOUNCE
+	if err := s.rtspAnnounce(); err != nil {
+		return fmt.Errorf("ANNOUNCE failed: %w", err)
+	}
+
+	// 7. PLAY
+	if err := s.rtspPlay(); err != nil {
+		return fmt.Errorf("PLAY failed: %w", err)
+	}
+
+	log.Println("RTSP handshake complete")
+	return nil
+}
+
+// rtspSendRequest sends an RTSP request and returns the response
+func (s *Stream) rtspSendRequest(method, target, body string) (map[string]string, string, error) {
+	// Build request
+	var req strings.Builder
+	req.WriteString(fmt.Sprintf("%s %s RTSP/1.0\r\n", method, target))
+	req.WriteString(fmt.Sprintf("CSeq: %d\r\n", s.rtspSeqNum))
+	req.WriteString("X-GS-ClientVersion: 14\r\n")
+	if s.sessionID != "" {
+		req.WriteString(fmt.Sprintf("Session: %s\r\n", s.sessionID))
+	}
+	if body != "" {
+		req.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
+		req.WriteString("Content-Type: application/sdp\r\n")
+	}
+	req.WriteString("\r\n")
+	if body != "" {
+		req.WriteString(body)
+	}
+
+	s.rtspSeqNum++
+
+	// Send request
+	if _, err := s.rtspConn.Write([]byte(req.String())); err != nil {
+		return nil, "", err
+	}
+
+	// Read response
+	s.rtspConn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	buf := make([]byte, 4096)
+	n, err := s.rtspConn.Read(buf)
+	if err != nil {
+		return nil, "", err
+	}
+
+	response := string(buf[:n])
+
+	// Parse response
+	headers := make(map[string]string)
+	lines := strings.Split(response, "\r\n")
+
+	if len(lines) < 1 || !strings.Contains(lines[0], "200") {
+		return nil, "", fmt.Errorf("RTSP error: %s", lines[0])
+	}
+
+	var payload string
+	inPayload := false
+	for _, line := range lines[1:] {
+		if line == "" {
+			inPayload = true
+			continue
+		}
+		if inPayload {
+			payload += line + "\n"
+		} else {
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) == 2 {
+				headers[parts[0]] = parts[1]
+			}
+		}
+	}
+
+	return headers, payload, nil
+}
+
+func (s *Stream) rtspOptions() error {
+	target := fmt.Sprintf("rtsp://%s:%d", s.client.host, s.rtspPort)
+	_, _, err := s.rtspSendRequest("OPTIONS", target, "")
+	return err
+}
+
+func (s *Stream) rtspDescribe() error {
+	target := fmt.Sprintf("rtsp://%s:%d", s.client.host, s.rtspPort)
+	_, _, err := s.rtspSendRequest("DESCRIBE", target, "")
+	return err
+}
+
+func (s *Stream) rtspSetup(streamID string) error {
+	target := fmt.Sprintf("rtsp://%s:%d/%s", s.client.host, s.rtspPort, streamID)
+	headers, _, err := s.rtspSendRequest("SETUP", target, "")
+	if err != nil {
+		return err
+	}
+
+	// Parse session ID from response
+	if session, ok := headers["Session"]; ok && s.sessionID == "" {
+		// Session format: "DEADBEEFCAFE;timeout = 90"
+		s.sessionID = strings.Split(session, ";")[0]
+		log.Printf("Got session ID: %s", s.sessionID)
+	}
+
+	// Parse X-SS-Ping-Payload for Sunshine ping protocol
+	if ping, ok := headers["X-SS-Ping-Payload"]; ok {
+		s.pingPayload = ping
+	}
+
+	// Parse Transport header for server port
+	if transport, ok := headers["Transport"]; ok {
+		// Format: "server_port=47998"
+		for _, part := range strings.Split(transport, ";") {
+			if strings.HasPrefix(part, "server_port=") {
+				portStr := strings.TrimPrefix(part, "server_port=")
+				port, _ := strconv.Atoi(portStr)
+				if strings.Contains(streamID, "video") {
+					s.videoPort = port
+					log.Printf("Video port: %d", port)
+				} else if strings.Contains(streamID, "audio") {
+					s.audioPort = port
+					log.Printf("Audio port: %d", port)
+				} else if strings.Contains(streamID, "control") {
+					s.controlPort = port
+					log.Printf("Control port: %d", port)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Stream) rtspAnnounce() error {
+	target := fmt.Sprintf("rtsp://%s:%d", s.client.host, s.rtspPort)
+
+	// Build SDP body with stream parameters
+	var sdp strings.Builder
+	sdp.WriteString("v=0\r\n")
+	sdp.WriteString("o=- 0 0 IN IP4 0.0.0.0\r\n")
+	sdp.WriteString("s=NVIDIA Streaming Client\r\n")
+	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].clientViewportWd:%d\r\n", s.width))
+	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].clientViewportHt:%d\r\n", s.height))
+	sdp.WriteString(fmt.Sprintf("a=x-nv-video[0].maxFPS:%d\r\n", s.fps))
+	sdp.WriteString(fmt.Sprintf("a=x-nv-vqos[0].bw.maximumBitrateKbps:%d\r\n", s.bitrate))
+	sdp.WriteString("a=x-nv-video[0].packetSize:1024\r\n")
+	sdp.WriteString("a=x-nv-video[0].rateControlMode:4\r\n")
+	sdp.WriteString("a=x-nv-video[0].timeoutLengthMs:7000\r\n")
+	sdp.WriteString("a=x-nv-video[0].framesWithInvalidRefThreshold:0\r\n")
+	sdp.WriteString("a=x-nv-vqos[0].bitStreamFormat:0\r\n") // 0=H264, 1=HEVC
+	sdp.WriteString("a=x-nv-video[0].encoderCscMode:0\r\n")
+	sdp.WriteString("a=x-nv-video[0].maxNumReferenceFrames:1\r\n")
+	sdp.WriteString("a=x-nv-video[0].videoEncoderSlicesPerFrame:1\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.numChannels:2\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.channelMask:3\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.enable:0\r\n")
+	sdp.WriteString("a=x-nv-audio.surround.AudioQuality:0\r\n")
+	sdp.WriteString("a=x-nv-aqos.packetDuration:5\r\n")
+	sdp.WriteString("a=x-nv-general.useReliableUdp:1\r\n")
+	sdp.WriteString("a=x-nv-vqos[0].fec.minRequiredFecPackets:0\r\n")
+	sdp.WriteString("a=x-nv-general.featureFlags:135\r\n")
+
+	_, _, err := s.rtspSendRequest("ANNOUNCE", target, sdp.String())
+	return err
+}
+
+func (s *Stream) rtspPlay() error {
+	target := fmt.Sprintf("rtsp://%s:%d", s.client.host, s.rtspPort)
+	_, _, err := s.rtspSendRequest("PLAY", target, "")
+	return err
+}
+
+// openMediaSockets opens UDP sockets for video and audio
+func (s *Stream) openMediaSockets() error {
+	// Open UDP socket for video
+	videoAddr := &net.UDPAddr{Port: 0} // Bind to any available port
+	videoConn, err := net.ListenUDP("udp", videoAddr)
+	if err != nil {
+		return fmt.Errorf("failed to open video socket: %w", err)
+	}
+	s.videoConn = videoConn
+	log.Printf("Video UDP socket bound to %s", videoConn.LocalAddr())
+
+	// Open UDP socket for audio
+	audioAddr := &net.UDPAddr{Port: 0}
+	audioConn, err := net.ListenUDP("udp", audioAddr)
+	if err != nil {
+		videoConn.Close()
+		return fmt.Errorf("failed to open audio socket: %w", err)
+	}
+	s.audioConn = audioConn
+	log.Printf("Audio UDP socket bound to %s", audioConn.LocalAddr())
+
+	// Send initial ping to video/audio ports to establish connection
+	serverVideoAddr := &net.UDPAddr{
+		IP:   net.ParseIP(s.client.host),
+		Port: s.videoPort,
+	}
+	serverAudioAddr := &net.UDPAddr{
+		IP:   net.ParseIP(s.client.host),
+		Port: s.audioPort,
+	}
+
+	// Send ping with payload or "PING"
+	pingData := []byte("PING")
+	if s.pingPayload != "" {
+		pingData = []byte(s.pingPayload)
+	}
+
+	log.Printf("Sending ping to video port %d", s.videoPort)
+	if _, err := videoConn.WriteToUDP(pingData, serverVideoAddr); err != nil {
+		log.Printf("Warning: failed to send video ping: %v", err)
+	}
+
+	log.Printf("Sending ping to audio port %d", s.audioPort)
+	if _, err := audioConn.WriteToUDP(pingData, serverAudioAddr); err != nil {
+		log.Printf("Warning: failed to send audio ping: %v", err)
+	}
+
+	return nil
+}
+
+// receiveVideoLoop receives video RTP packets from Sunshine
+func (s *Stream) receiveVideoLoop() {
+	defer s.videoConn.Close()
+
+	buf := make([]byte, 65536) // Large buffer for video packets
+	packetsReceived := 0
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
-		case <-ticker.C:
-			// In real implementation, receive actual video frame from Sunshine
-			frameNum++
-			// Placeholder: would send actual H.264 NAL units here
+		default:
+		}
+
+		s.videoConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, _, err := s.videoConn.ReadFromUDP(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			log.Printf("Video receive error: %v", err)
+			continue
+		}
+
+		if n < 12 {
+			continue // Too short for RTP header
+		}
+
+		packetsReceived++
+		if packetsReceived == 1 {
+			log.Printf("Receiving video packets from Sunshine")
+		}
+
+		// Send the complete RTP packet to the channel
+		// Pion's TrackLocalStaticRTP expects full RTP packets
+		select {
+		case s.videoFrames <- append([]byte{}, buf[:n]...):
+		default:
+			// Channel full, drop packet
+		}
+	}
+}
+
+// receiveAudioLoop receives audio RTP packets from Sunshine
+func (s *Stream) receiveAudioLoop() {
+	defer s.audioConn.Close()
+
+	buf := make([]byte, 4096)
+	packetsReceived := 0
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+
+		s.audioConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, _, err := s.audioConn.ReadFromUDP(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			log.Printf("Audio receive error: %v", err)
+			continue
+		}
+
+		if n < 12 {
+			continue // Too short for RTP header
+		}
+
+		packetsReceived++
+		if packetsReceived == 1 {
+			log.Printf("Receiving audio packets from Sunshine")
+		}
+
+		// Send the complete RTP packet to the channel
+		// Pion's TrackLocalStaticRTP expects full RTP packets
+		select {
+		case s.audioFrames <- append([]byte{}, buf[:n]...):
+		default:
+			// Channel full, drop packet
 		}
 	}
 }
@@ -945,17 +1288,36 @@ func (s *Stream) buildMousePacket(input InputPacket) []byte {
 func (s *Stream) Close() error {
 	s.cancel()
 
-	if s.conn != nil {
-		// Send quit command to Sunshine
-		quitURL := fmt.Sprintf("http://%s:%d/cancel?uniqueid=%s",
-			s.client.host, s.client.port, s.client.uniqueID)
-		http.Get(quitURL)
+	// Send quit command to Sunshine
+	quitURL := fmt.Sprintf("http://%s:%d/cancel?uniqueid=%s",
+		s.client.host, s.client.port, s.client.uniqueID)
+	http.Get(quitURL)
 
-		s.conn.Close()
+	// Close all connections
+	if s.rtspConn != nil {
+		s.rtspConn.Close()
+	}
+	if s.videoConn != nil {
+		s.videoConn.Close()
+	}
+	if s.audioConn != nil {
+		s.audioConn.Close()
+	}
+	if s.controlConn != nil {
+		s.controlConn.Close()
 	}
 
-	close(s.videoFrames)
-	close(s.audioFrames)
+	// Close channels safely
+	select {
+	case <-s.videoFrames:
+	default:
+		close(s.videoFrames)
+	}
+	select {
+	case <-s.audioFrames:
+	default:
+		close(s.audioFrames)
+	}
 
 	return nil
 }
