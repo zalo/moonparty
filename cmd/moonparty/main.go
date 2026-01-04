@@ -16,14 +16,16 @@ func main() {
 	sunshineHost := flag.String("host", "localhost", "Sunshine host address")
 	sunshinePort := flag.Int("port", 47989, "Sunshine Moonlight API port (not 47990 web UI)")
 	listenAddr := flag.String("listen", ":8080", "Web server listen address")
+	newIdentity := flag.Bool("new-identity", false, "Generate a new client identity (use if pairing is stuck)")
 	flag.Parse()
 
 	// Create configuration
 	cfg := &server.Config{
-		ListenAddr:   *listenAddr,
-		SunshineHost: *sunshineHost,
-		SunshinePort: *sunshinePort,
-		ConfigPath:   *configPath,
+		ListenAddr:        *listenAddr,
+		SunshineHost:      *sunshineHost,
+		SunshinePort:      *sunshinePort,
+		ConfigPath:        *configPath,
+		ForceNewIdentity:  *newIdentity,
 		ICEServers: []string{
 			"stun:stun.l.google.com:19302",
 			"stun:stun1.l.google.com:19302",

@@ -15,6 +15,9 @@ type Config struct {
 	// ConfigPath is the path to the config file
 	ConfigPath string `json:"config_path"`
 
+	// ForceNewIdentity forces regeneration of the client identity
+	ForceNewIdentity bool `json:"-"`
+
 	// ICEServers is a list of STUN/TURN server URLs
 	ICEServers []string `json:"ice_servers"`
 

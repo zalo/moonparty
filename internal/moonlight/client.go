@@ -66,12 +66,12 @@ func NewClient(host string, port int) *Client {
 		port:       port,
 		deviceName: "Moonparty",
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second, // Longer timeout for pairing requests
+			Timeout: 90 * time.Second, // Long timeout for pairing (matches moonlight-web-stream)
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true,
 				},
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: 90 * time.Second,
 			},
 		},
 	}
@@ -101,6 +101,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.paired = paired
 	if !paired {
 		log.Println("Not paired with Sunshine.")
+
+		// First, unpair to clear any stuck pairing state
+		log.Println("Clearing any stuck pairing state...")
+		if err := c.Unpair(ctx); err != nil {
+			log.Printf("Unpair returned (this is normal): %v", err)
+		}
+
 		log.Println("Starting pairing process...")
 
 		// Generate PIN and start pairing
@@ -153,6 +160,25 @@ func (c *Client) testConnectivity(ctx context.Context) error {
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
+	return nil
+}
+
+// Unpair clears the pairing state with Sunshine
+func (c *Client) Unpair(ctx context.Context) error {
+	url := fmt.Sprintf("http://%s:%d/unpair?uniqueid=%s", c.host, c.port, c.uniqueID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Unpair typically returns 200 OK regardless of previous state
 	return nil
 }
 
@@ -478,6 +504,23 @@ func (c *Client) aesDecrypt(key, data []byte) ([]byte, error) {
 	}
 
 	return decrypted, nil
+}
+
+// DeleteIdentity removes the stored client identity files
+func (c *Client) DeleteIdentity() error {
+	homeDir, _ := os.UserHomeDir()
+	certDir := filepath.Join(homeDir, ".moonparty")
+
+	certPath := filepath.Join(certDir, "client.crt")
+	keyPath := filepath.Join(certDir, "client.key")
+	idPath := filepath.Join(certDir, "unique_id")
+
+	os.Remove(certPath)
+	os.Remove(keyPath)
+	os.Remove(idPath)
+
+	log.Println("Deleted existing client identity")
+	return nil
 }
 
 // loadOrGenerateIdentity loads or creates client certificates

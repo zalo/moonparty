@@ -34,6 +34,12 @@ func New(cfg *Config) (*Server, error) {
 	// Initialize Moonlight client
 	mlClient := moonlight.NewClient(cfg.SunshineHost, cfg.SunshinePort)
 
+	// Delete existing identity if requested (useful when pairing is stuck)
+	if cfg.ForceNewIdentity {
+		log.Println("Forcing new client identity generation...")
+		mlClient.DeleteIdentity()
+	}
+
 	// Initialize WebRTC manager
 	webrtcMgr, err := webrtc.NewManager(cfg.ICEServers, cfg.TURNUsername, cfg.TURNCredential)
 	if err != nil {
