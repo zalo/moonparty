@@ -108,27 +108,28 @@ func (c *Client) Connect(ctx context.Context) error {
 			log.Printf("Unpair returned (this is normal): %v", err)
 		}
 
-		log.Println("Starting pairing process...")
-
-		// Generate PIN and start pairing
-		pin, err := c.StartPairing(ctx)
-		if err != nil {
-			return fmt.Errorf("pairing error: %w", err)
-		}
+		// Generate PIN FIRST and display it BEFORE making the pairing request
+		// This is critical because Sunshine holds the HTTP response open
+		// until the user enters the PIN in the web UI
+		pinBytes := make([]byte, 4)
+		rand.Read(pinBytes)
+		pin := fmt.Sprintf("%04d", (int(pinBytes[0])<<8|int(pinBytes[1]))%10000)
+		c.pairingPIN = pin
 
 		log.Println("")
 		log.Println("============================================")
 		log.Printf("  PAIRING PIN: %s", pin)
 		log.Println("============================================")
 		log.Println("")
-		log.Println("Enter this PIN in Sunshine's web UI:")
+		log.Println("Enter this PIN in Sunshine's web UI NOW:")
 		log.Printf("  https://%s:47990 -> PIN Pairing", c.host)
 		log.Println("")
-		log.Println("Waiting for pairing to complete...")
+		log.Println("The request below will wait until you enter the PIN...")
+		log.Println("")
 
-		// Wait for user to enter PIN in Sunshine (poll for completion)
-		if err := c.waitForPairing(ctx); err != nil {
-			return fmt.Errorf("pairing failed: %w", err)
+		// Now start pairing - this will block until user enters PIN in Sunshine
+		if err := c.StartPairing(ctx); err != nil {
+			return fmt.Errorf("pairing error: %w", err)
 		}
 
 		log.Println("Pairing successful!")
@@ -182,26 +183,24 @@ func (c *Client) Unpair(ctx context.Context) error {
 	return nil
 }
 
-// StartPairing initiates the pairing process and returns a PIN
-func (c *Client) StartPairing(ctx context.Context) (string, error) {
-	// Generate a random 4-digit PIN
-	pinBytes := make([]byte, 4)
-	rand.Read(pinBytes)
-	pin := fmt.Sprintf("%04d", (int(pinBytes[0])<<8|int(pinBytes[1]))%10000)
-	c.pairingPIN = pin
+// StartPairing initiates the pairing process (PIN must be set before calling)
+func (c *Client) StartPairing(ctx context.Context) error {
+	if c.pairingPIN == "" {
+		return fmt.Errorf("PIN must be set before starting pairing")
+	}
 
-	// Phase 1: Get server certificate
+	// Phase 1: Get server certificate (this blocks until user enters PIN in Sunshine!)
 	serverCert, err := c.pairGetServerCert(ctx)
 	if err != nil {
-		return "", fmt.Errorf("getservercert failed: %w", err)
+		return fmt.Errorf("getservercert failed: %w", err)
 	}
 
 	// Phase 2: Send challenge
 	if err := c.pairChallenge(ctx, serverCert); err != nil {
-		return "", fmt.Errorf("challenge failed: %w", err)
+		return fmt.Errorf("challenge failed: %w", err)
 	}
 
-	return pin, nil
+	return nil
 }
 
 // pairGetServerCert initiates pairing and gets server certificate
