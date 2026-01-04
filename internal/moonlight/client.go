@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Sunshine ports
@@ -42,10 +44,13 @@ type Client struct {
 	httpClient  *http.Client
 	uniqueID    string
 	clientCert  *tls.Certificate
-	certDER     []byte // Raw certificate bytes for pairing
+	certDER     []byte    // Raw certificate bytes for pairing
+	certPEM     []byte    // PEM-encoded certificate for pairing request
 	privateKey  *rsa.PrivateKey
 	paired      bool
 	pairingPIN  string
+	pairingSalt []byte    // Salt used in current pairing session
+	pairingUUID string    // UUID for current pairing session
 	deviceName  string
 }
 
@@ -143,8 +148,21 @@ func (c *Client) StartPairing(ctx context.Context) (string, error) {
 
 // pairGetServerCert initiates pairing and gets server certificate
 func (c *Client) pairGetServerCert(ctx context.Context) ([]byte, error) {
-	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&devicename=%s&updateState=1&phrase=getservercert",
-		c.host, c.port, c.uniqueID, c.deviceName)
+	// Generate salt for this pairing session (16 random bytes)
+	c.pairingSalt = make([]byte, 16)
+	rand.Read(c.pairingSalt)
+
+	// Generate UUID for this pairing session
+	c.pairingUUID = uuid.New().String()
+
+	// Hex-encode the salt (uppercase as per Moonlight protocol)
+	saltHex := strings.ToUpper(hex.EncodeToString(c.pairingSalt))
+
+	// Hex-encode the client certificate PEM (uppercase)
+	certPEMHex := strings.ToUpper(hex.EncodeToString(c.certPEM))
+
+	url := fmt.Sprintf("http://%s:%d/pair?uniqueid=%s&uuid=%s&devicename=%s&updateState=1&phrase=getservercert&salt=%s&clientcert=%s",
+		c.host, c.port, c.uniqueID, c.pairingUUID, c.deviceName, saltHex, certPEMHex)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -452,12 +470,13 @@ func (c *Client) loadOrGenerateIdentity() error {
 			c.privateKey, _ = x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
 		}
 
-		// Load cert DER
-		certPEM, err := os.ReadFile(certPath)
+		// Load cert PEM and DER
+		certPEMBytes, err := os.ReadFile(certPath)
 		if err != nil {
 			return err
 		}
-		certBlock, _ := pem.Decode(certPEM)
+		c.certPEM = certPEMBytes
+		certBlock, _ := pem.Decode(certPEMBytes)
 		if certBlock != nil {
 			c.certDER = certBlock.Bytes
 		}
@@ -498,8 +517,9 @@ func (c *Client) loadOrGenerateIdentity() error {
 	c.certDER = certDER
 
 	// Save certificate
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+	certPEMBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	c.certPEM = certPEMBytes
+	if err := os.WriteFile(certPath, certPEMBytes, 0600); err != nil {
 		return err
 	}
 
