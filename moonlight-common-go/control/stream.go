@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -94,14 +95,25 @@ func (s *Stream) Start(ctx context.Context, remoteAddr net.Addr, controlPort int
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.remoteAddr = remoteAddr
 
+	// Extract IP from the address (could be UDPAddr or TCPAddr)
+	var remoteIP net.IP
+	switch addr := remoteAddr.(type) {
+	case *net.UDPAddr:
+		remoteIP = addr.IP
+	case *net.TCPAddr:
+		remoteIP = addr.IP
+	default:
+		return fmt.Errorf("unsupported address type: %T", remoteAddr)
+	}
+
 	// Connect to control port
-	// For Gen5+, this would use ENet over UDP
+	// For Gen5+, this uses ENet over UDP
 	// For older versions, TCP
 	if s.appVersion[0] >= 5 {
 		// ENet connection would go here
 		// For this port, we'll use a placeholder
 		udpAddr := &net.UDPAddr{
-			IP:   remoteAddr.(*net.UDPAddr).IP,
+			IP:   remoteIP,
 			Port: controlPort,
 		}
 		conn, err := net.DialUDP("udp", nil, udpAddr)
@@ -112,7 +124,7 @@ func (s *Stream) Start(ctx context.Context, remoteAddr net.Addr, controlPort int
 	} else {
 		// TCP connection for older versions
 		tcpAddr := &net.TCPAddr{
-			IP:   remoteAddr.(*net.TCPAddr).IP,
+			IP:   remoteIP,
 			Port: 47995,
 		}
 		conn, err := net.DialTimeout("tcp", tcpAddr.String(), ControlStreamTimeoutSec*time.Second)
