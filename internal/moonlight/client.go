@@ -1240,19 +1240,20 @@ func (s *Stream) startPingThreads() {
 	serverAudioAddr := &net.UDPAddr{IP: serverIP, Port: s.audioPort}
 
 	// Sunshine ping format: SS_PING struct
-	// - 16-byte payload field (from hex-decoded X-SS-Ping-Payload header)
+	// - 16-byte payload field (the hex string from X-SS-Ping-Payload as ASCII chars)
 	// - 4-byte sequence number (big-endian)
 	// Total: 20 bytes
 
 	var pingPayload [16]byte
 	if s.pingPayload != "" {
-		// X-SS-Ping-Payload is hex-encoded (e.g., "E383D75321D01672" = 8 bytes)
-		decoded, err := hex.DecodeString(s.pingPayload)
-		if err != nil {
-			log.Printf("Warning: failed to decode ping payload as hex: %v", err)
+		// X-SS-Ping-Payload is a 16-char hex string that must be sent as ASCII characters
+		// Sunshine's msg.find(expected_payload) looks for these ASCII chars in the UDP packet
+		// Do NOT decode the hex - send it as-is!
+		if len(s.pingPayload) == 16 {
+			copy(pingPayload[:], []byte(s.pingPayload))
+			log.Printf("Using Sunshine ping payload as ASCII: %s (16 bytes)", s.pingPayload)
 		} else {
-			copy(pingPayload[:], decoded)
-			log.Printf("Using Sunshine ping payload: %s -> %d decoded bytes", s.pingPayload, len(decoded))
+			log.Printf("Warning: unexpected ping payload length %d (expected 16)", len(s.pingPayload))
 		}
 	}
 
