@@ -49,6 +49,10 @@ type Stream struct {
 	encrypted bool
 	aesKey    []byte
 
+	// Sunshine ping
+	pingPayload [16]byte
+	pingSeqNum  uint32
+
 	// Threads
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -107,13 +111,19 @@ type FrameAssembly struct {
 }
 
 // NewStream creates a new video stream handler
-func NewStream(config types.StreamConfiguration, callbacks types.DecoderCallbacks) *Stream {
-	return &Stream{
+// pingPayload is the 16-char X-SS-Ping-Payload from Sunshine RTSP SETUP
+func NewStream(config types.StreamConfiguration, callbacks types.DecoderCallbacks, pingPayload string) *Stream {
+	s := &Stream{
 		config:    config,
 		callbacks: callbacks,
 		encrypted: (config.EncryptionFlags & types.EncVideo) != 0,
 		aesKey:    config.RemoteInputAesKey,
 	}
+	// Copy ping payload (X-SS-Ping-Payload is a 16-char hex string sent as ASCII)
+	if len(pingPayload) == 16 {
+		copy(s.pingPayload[:], []byte(pingPayload))
+	}
+	return s
 }
 
 // Start begins video stream reception
@@ -258,11 +268,14 @@ func (s *Stream) receiveLoop() {
 	}
 }
 
-// pingLoop sends periodic UDP pings
+// pingLoop sends periodic UDP pings in Sunshine format
+// SS_PING format: 16-byte payload + 4-byte sequence number (big-endian)
 func (s *Stream) pingLoop() {
 	defer s.wg.Done()
 
-	pingData := []byte{0x50, 0x49, 0x4E, 0x47} // "PING"
+	pingPacket := make([]byte, 20)
+	copy(pingPacket[:16], s.pingPayload[:])
+
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -271,7 +284,13 @@ func (s *Stream) pingLoop() {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			s.conn.WriteToUDP(pingData, s.remoteAddr)
+			s.pingSeqNum++
+			// Sequence number in big-endian
+			pingPacket[16] = byte(s.pingSeqNum >> 24)
+			pingPacket[17] = byte(s.pingSeqNum >> 16)
+			pingPacket[18] = byte(s.pingSeqNum >> 8)
+			pingPacket[19] = byte(s.pingSeqNum)
+			s.conn.WriteToUDP(pingPacket, s.remoteAddr)
 		}
 	}
 }

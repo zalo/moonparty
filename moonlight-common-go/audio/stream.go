@@ -43,6 +43,10 @@ type Stream struct {
 	aesIV     []byte
 	riKeyID   uint32
 
+	// Sunshine ping
+	pingPayload [16]byte
+	pingSeqNum  uint32
+
 	// Threads
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -66,7 +70,8 @@ type audioPacket struct {
 }
 
 // NewStream creates a new audio stream handler
-func NewStream(config types.StreamConfiguration, callbacks types.AudioCallbacks) *Stream {
+// pingPayload is the 16-char X-SS-Ping-Payload from Sunshine RTSP SETUP
+func NewStream(config types.StreamConfiguration, callbacks types.AudioCallbacks, pingPayload string) *Stream {
 	encrypted := config.AudioEncryptionEnabled
 
 	// Calculate RI key ID from IV
@@ -75,7 +80,7 @@ func NewStream(config types.StreamConfiguration, callbacks types.AudioCallbacks)
 		riKeyID = binary.BigEndian.Uint32(config.RemoteInputAesIV[:4])
 	}
 
-	return &Stream{
+	s := &Stream{
 		config:     config,
 		callbacks:  callbacks,
 		encrypted:  encrypted,
@@ -83,6 +88,11 @@ func NewStream(config types.StreamConfiguration, callbacks types.AudioCallbacks)
 		aesIV:      config.RemoteInputAesIV,
 		riKeyID:    riKeyID,
 	}
+	// Copy ping payload (X-SS-Ping-Payload is a 16-char hex string sent as ASCII)
+	if len(pingPayload) == 16 {
+		copy(s.pingPayload[:], []byte(pingPayload))
+	}
+	return s
 }
 
 // Start begins audio stream reception
@@ -270,11 +280,14 @@ func (s *Stream) receiveLoop() {
 	}
 }
 
-// pingLoop sends periodic UDP pings
+// pingLoop sends periodic UDP pings in Sunshine format
+// SS_PING format: 16-byte payload + 4-byte sequence number (big-endian)
 func (s *Stream) pingLoop() {
 	defer s.wg.Done()
 
-	pingData := []byte{0x50, 0x49, 0x4E, 0x47} // "PING"
+	pingPacket := make([]byte, 20)
+	copy(pingPacket[:16], s.pingPayload[:])
+
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -283,7 +296,13 @@ func (s *Stream) pingLoop() {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			s.conn.WriteToUDP(pingData, s.remoteAddr)
+			s.pingSeqNum++
+			// Sequence number in big-endian
+			pingPacket[16] = byte(s.pingSeqNum >> 24)
+			pingPacket[17] = byte(s.pingSeqNum >> 16)
+			pingPacket[18] = byte(s.pingSeqNum >> 8)
+			pingPacket[19] = byte(s.pingSeqNum)
+			s.conn.WriteToUDP(pingPacket, s.remoteAddr)
 		}
 	}
 }

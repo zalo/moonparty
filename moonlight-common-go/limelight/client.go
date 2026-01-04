@@ -58,6 +58,9 @@ type Client struct {
 	videoPort   int
 	audioPort   int
 	controlPort int
+
+	// Sunshine ping payload
+	pingPayload string
 }
 
 // NewClient creates a new Moonlight client
@@ -269,6 +272,7 @@ func (c *Client) doRTSPHandshake() error {
 	c.videoPort = ports.VideoPort
 	c.audioPort = ports.AudioPort
 	c.controlPort = ports.ControlPort
+	c.pingPayload = ports.PingPayload
 
 	// Fallback ports
 	if c.videoPort == 0 {
@@ -362,13 +366,13 @@ func (c *Client) initControlStream() error {
 
 // initVideoStream initializes the video stream
 func (c *Client) initVideoStream() error {
-	c.videoStream = video.NewStream(c.Config, c.Decoder)
+	c.videoStream = video.NewStream(c.Config, c.Decoder, c.pingPayload)
 	return c.videoStream.Start(c.ctx, c.remoteAddr, c.localAddr, c.videoPort)
 }
 
 // initAudioStream initializes the audio stream
 func (c *Client) initAudioStream() error {
-	c.audioStream = audio.NewStream(c.Config, c.Audio)
+	c.audioStream = audio.NewStream(c.Config, c.Audio, c.pingPayload)
 	return c.audioStream.Start(c.ctx, c.remoteAddr, c.localAddr, c.audioPort, c.opusConfig, c.audioPacketDuration)
 }
 

@@ -41,6 +41,7 @@ type StreamPorts struct {
 	VideoPort   int
 	AudioPort   int
 	ControlPort int
+	PingPayload string // X-SS-Ping-Payload from Sunshine
 }
 
 // NewClient creates a new RTSP client
@@ -118,6 +119,10 @@ func (c *Client) DoSetup() (*StreamPorts, error) {
 	if session := resp.Headers["Session"]; session != "" && c.sessionID == "" {
 		parts := strings.Split(session, ";")
 		c.sessionID = strings.TrimSpace(parts[0])
+	}
+	// Parse X-SS-Ping-Payload from Sunshine
+	if ping := resp.Headers["X-SS-Ping-Payload"]; ping != "" {
+		ports.PingPayload = ping
 	}
 	ports.AudioPort = parseTransportPort(resp.Headers["Transport"])
 
