@@ -1140,26 +1140,84 @@ func (s *Stream) openMediaSockets() error {
 	serverVideoAddr := &net.UDPAddr{IP: serverIP, Port: s.videoPort}
 	serverAudioAddr := &net.UDPAddr{IP: serverIP, Port: s.audioPort}
 
-	// Send ping with payload from RTSP SETUP or legacy "PING"
-	pingData := []byte("PING")
-	if s.pingPayload != "" {
-		pingData = []byte(s.pingPayload)
+	// Build ping packet: 16-byte payload + 4-byte big-endian sequence number
+	// Sunshine expects this format (SS_PING struct from moonlight-common-c)
+	var pingPayload [16]byte
+	if s.pingPayload != "" && len(s.pingPayload) == 16 {
+		copy(pingPayload[:], s.pingPayload)
 		log.Printf("Using Sunshine ping payload: %s", s.pingPayload)
+	} else {
+		// Legacy "PING" format (padded to 16 bytes)
+		copy(pingPayload[:], "PING")
+		log.Printf("Using legacy PING payload")
 	}
 
-	// Moonlight sends multiple ping attempts (10 times with 50ms delay)
-	log.Printf("Sending pings to video %s and audio %s", serverVideoAddr, serverAudioAddr)
+	// Moonlight sends ping attempts continuously every 500ms
+	// The ping packet is 20 bytes: 16-byte payload + 4-byte sequence number (big-endian)
+	log.Printf("Starting ping threads for video %s and audio %s", serverVideoAddr, serverAudioAddr)
+
+	// Start video ping goroutine (runs until stream closes)
 	go func() {
-		for i := 0; i < 10; i++ {
-			if _, err := videoConn.WriteToUDP(pingData, serverVideoAddr); err != nil {
-				log.Printf("Warning: video ping %d failed: %v", i, err)
+		var seqNum uint32 = 0
+		pingPacket := make([]byte, 20)
+		copy(pingPacket[:16], pingPayload[:])
+
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			default:
 			}
-			if _, err := audioConn.WriteToUDP(pingData, serverAudioAddr); err != nil {
-				log.Printf("Warning: audio ping %d failed: %v", i, err)
+
+			seqNum++
+			// Sequence number in big-endian
+			pingPacket[16] = byte(seqNum >> 24)
+			pingPacket[17] = byte(seqNum >> 16)
+			pingPacket[18] = byte(seqNum >> 8)
+			pingPacket[19] = byte(seqNum)
+
+			if _, err := videoConn.WriteToUDP(pingPacket, serverVideoAddr); err != nil {
+				log.Printf("Warning: video ping failed: %v", err)
 			}
-			time.Sleep(50 * time.Millisecond)
+
+			if seqNum == 1 {
+				log.Printf("Sent first video ping (20 bytes)")
+			}
+
+			time.Sleep(500 * time.Millisecond)
 		}
-		log.Printf("Finished sending 10 ping attempts")
+	}()
+
+	// Start audio ping goroutine (runs until stream closes)
+	go func() {
+		var seqNum uint32 = 0
+		pingPacket := make([]byte, 20)
+		copy(pingPacket[:16], pingPayload[:])
+
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			default:
+			}
+
+			seqNum++
+			// Sequence number in big-endian
+			pingPacket[16] = byte(seqNum >> 24)
+			pingPacket[17] = byte(seqNum >> 16)
+			pingPacket[18] = byte(seqNum >> 8)
+			pingPacket[19] = byte(seqNum)
+
+			if _, err := audioConn.WriteToUDP(pingPacket, serverAudioAddr); err != nil {
+				log.Printf("Warning: audio ping failed: %v", err)
+			}
+
+			if seqNum == 1 {
+				log.Printf("Sent first audio ping (20 bytes)")
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
 	}()
 
 	return nil
